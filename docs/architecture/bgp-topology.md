@@ -26,10 +26,12 @@ The BGP topology is designed to achieve the following goals:
 
 Non-goals:
 - Internet-scale routing
-- Complex traffic engineering using advanced BGP features (e.g. communities for multi-tenant policy)
+- Complex traffic engineering using advanced BGP features (e.g. communities for
+  multi-tenant policy)
 
 ## 3. High-Level Topology Overview
-At a high level, the topology follows a hierarchical, spine–leaf-inspired model adapted for a lab environment:
+At a high level, the topology follows a hierarchical, spine–leaf-inspired model
+adapted for a lab environment:
 
 ```
          [External Network]
@@ -178,7 +180,8 @@ Upstream routers advertise:
 - Reject unexpected or overly broad prefixes
 - Prefer shortest AS path by default
 
-No aggressive traffic engineering is applied unless explicitly enabled for experiments.
+No aggressive traffic engineering is applied unless explicitly enabled for
+experiments.
 
 ## 8. Failure Domains and Convergence
 ### 8.1 Node Failure
@@ -220,7 +223,8 @@ After Node-2 Failure:
 - TTL security (GTSM) enabled where supported
 - MD5 or TCP-AO authentication optional in lab
 
-No assumption is made about hostile networks, but misconfiguration is treated as a primary risk.
+No assumption is made about hostile networks, but misconfiguration is treated
+as a primary risk.
 
 ## 11. Observability and Operations
 Recommended practices:
@@ -241,6 +245,8 @@ Potential evolutions of the topology:
 - Simulation of internet-style peering
 
 ## 13. Related Documents
-- [Architecture Overview](overview.md) - main architecture design covering compute, networking, and Kubernetes bootstrap
+- [Architecture Overview](overview.md) - main architecture design covering
+compute, networking, and Kubernetes bootstrap
 
-This document should be read together with the main Architecture document and kept in sync as topology or design assumptions evolve.
+This document should be read together with the main Architecture document and
+kept in sync as topology or design assumptions evolve.
