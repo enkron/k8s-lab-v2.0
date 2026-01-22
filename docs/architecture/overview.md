@@ -197,3 +197,7 @@ This design answers "yes" to:
 This document represents the baseline architecture. All future changes should
 reference this document, justify deviations explicitly, and preserve the
 underlying principles.
+
+## 16. Related Documents
+- [BGP Topology Architecture](bgp-topology.md) - detailed BGP design, peering
+  models, AS structure, failure domains, and routing policy.
