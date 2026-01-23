@@ -137,23 +137,31 @@ Pod and Service networks are logically distinct even if implemented by the same
 CNI.
 
 ## 11. BGP Design
-### 11.1 Autonomous System (AS)
-- All nodes belong to one AS.
-- Private ASN: 64512.
+### 11.1 Autonomous System (AS) Structure
+- Kubernetes cluster: AS 64512 (private ASN)
+- Upstream routers: AS 64513 (private ASN)
 
-This represents single administrative control and unified routing policy.
+This represents typical production separation between infrastructure and edge routing.
 
-### 11.2 iBGP Topology
-- iBGP sessions established between all nodes.
-- Each node advertises:
-    - its Pod CIDR
-    - optionally service CIDRs
+### 11.2 eBGP with Route Reflectors
+Default topology uses eBGP between nodes and upstream routers, with Route Reflectors
+for scalability:
 
-No external BGP peers are assumed at this stage.
+- Upstream routers peer with Route Reflectors via eBGP
+- Kubernetes nodes peer with Route Reflectors via iBGP
+- Route Reflectors reflect routes between nodes without full mesh
+
+Each node advertises:
+- its Pod CIDR
+- optionally service CIDRs
 
 Rationale:
-- Keeps routing explicit and inspectable.
-- Scales to production-style L3 fabrics.
+- Avoids O(n²) session scaling of full mesh
+- Production-aligned (spine-leaf inspired)
+- Keeps routing explicit and inspectable
+- Scales to larger deployments without redesign
+
+See [BGP Topology Architecture](bgp-topology.md) for detailed peering models.
 
 ### 11.3 Future Extension
 The design allows later introduction of:
@@ -165,13 +173,17 @@ Without redesigning the cluster.
 
 ## 12. IPv6 Strategy
 - IPv6 is enabled from day one.
-- Static addressing is preferred.
-- No SLAAC dependency.
+- Static addressing is required for node interfaces.
+- SLAAC explicitly disabled (`IPv6AcceptRA=no`).
 
 Rationale:
-- Predictable addressing aids debugging.
-- Aligns with modern data-center practices.
-- Required for eBPF datapath testing and IPv6-first scenarios.
+- **Kubernetes requirement**: Node IPs must be stable; K8s does not handle IP changes at runtime.
+- **Data center alignment**: Production servers use static IPv6 addressing, not SLAAC.
+- **Deterministic debugging**: Static addresses enable predictable packet tracing and troubleshooting.
+- **Security**: Prevents rogue Router Advertisement attacks; no dependency on RA messages.
+- **BGP integration**: Static node addresses required for stable BGP peering sessions.
+
+Note: SLAAC is appropriate for end-user devices, not infrastructure servers.
 
 ## 13. CNI Direction (Non-Binding)
 The lab is designed to support:

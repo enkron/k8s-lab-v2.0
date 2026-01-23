@@ -38,44 +38,62 @@ adapted for a lab environment:
                 |
       +---------+---------+
       |                   |
-[Upstream-1]        [Upstream-2]
+[Upstream-1]        [Upstream-2]   <- Edge routers (AS 64513)
+   (AS 64513)        (AS 64513)
+      |                   |
+      +--------+----------+
+               |
+          eBGP peering
+               |
+      +--------+----------+
+      |                   |
+   [RR-1]              [RR-2]      <- Route Reflectors (AS 64512)
       |                   |
       +----+----+----+----+
            |    |    |
-      [Node-1] [Node-2] [Node-3]
+        iBGP peering
+           |    |    |
+      [cp-1] [worker-1] [worker-2] <- K8s nodes (AS 64512)
            |    |    |
        [Pods] [Pods] [Pods]
 ```
 
-- Edge / Upstream Routers
+- Edge / Upstream Routers (AS 64513)
   - Act as default gateways to external networks
   - Provide north–south connectivity
+  - Peer with Route Reflectors via eBGP
 
-- Leaf / Node Routers
+- Route Reflectors (AS 64512)
+  - Reflect routes between nodes without full mesh
+  - Peer with upstream routers via eBGP
+  - Peer with nodes via iBGP (client sessions)
+  - Can be co-located on control-plane node or separate VMs
+
+- Leaf / Node Routers (AS 64512)
   - Represent Kubernetes worker and control-plane nodes
   - Originate pod and service CIDRs
-
-- Optional Spine / Route-Reflector Layer
-  - Used when scaling beyond a small number of nodes
-  - Reduces full-mesh requirements
+  - Peer only with Route Reflectors (not each other)
 
 Logical connectivity:
-- eBGP is preferred between nodes and upstream routers
-- iBGP is used only when route reflectors are introduced
+- eBGP between upstream routers and Route Reflectors
+- iBGP between Route Reflectors and Kubernetes nodes
+- Route Reflectors eliminate O(n²) full-mesh requirement
 
 ## 4. Autonomous System (AS) Design
 ### 4.1 AS Numbering Strategy
 - A private AS range is used (64512–65534)
-- Single-AS design by default for simplicity
-- Optional multi-AS design supported for experimentation
+- Dual-AS design by default for production realism
+- eBGP at edge, iBGP internally
 
-Example:
-- AS 65000: Kubernetes cluster
-- AS 65010: Upstream / edge routers
+Default assignment:
+- AS 64512: Kubernetes cluster (nodes + Route Reflectors)
+- AS 64513: Upstream / edge routers
 
 ### 4.2 Rationale
-- Single-AS simplifies policy and debugging
-- Multi-AS allows testing of realistic eBGP behavior and loop prevention
+- Dual-AS reflects production patterns (separate infrastructure and edge routing)
+- eBGP at edge provides clear administrative boundaries
+- iBGP internally allows Route Reflector deployment
+- Enables testing of realistic eBGP behavior and loop prevention
 
 ## 5. BGP Roles and Responsibilities
 ### 5.1 Upstream / Edge Routers
@@ -110,8 +128,49 @@ Characteristics:
 - Deployed only when node count justifies complexity
 
 ## 6. Peering Model
-### 6.1 Default Model: eBGP Full Fan-Out
-- Each node peers with all upstream routers
+### 6.1 Default Model: eBGP with Route Reflectors
+- Upstream routers peer with Route Reflectors via eBGP
+- Kubernetes nodes peer with Route Reflectors via iBGP
+- Route Reflectors reflect routes between nodes without requiring full mesh
+
+```
+  [Upstream-1]    [Upstream-2]
+   (AS 64513)      (AS 64513)
+         |              |
+         +------+-------+
+                |
+          eBGP peering
+                |
+    +-----+-----+-----+-----+
+    |                       |
+  [RR-1]                 [RR-2]
+(AS 64512)             (AS 64512)
+    |                       |
+    +----+----+----+----+---+
+         |    |    |
+      iBGP peering (client sessions)
+         |    |    |
+      [cp-1] [worker-1] [worker-2]
+     (AS 64512)
+```
+
+Pros:
+- Scalable: O(n) sessions instead of O(n²) full mesh
+- Production-aligned: mirrors spine-leaf architectures
+- Clear separation: eBGP at edge, iBGP internally
+- Redundancy: dual Route Reflectors for high availability
+
+Cons:
+- Additional control-plane components (RR nodes)
+- RR failure affects route propagation (mitigated by dual RRs)
+
+Implementation notes:
+- Route Reflectors can be co-located on control-plane node or run as separate VMs
+- For small labs, a single RR is acceptable; production requires at least two
+- RRs do not participate in data-plane traffic
+
+### 6.2 Alternative Model: eBGP Full Fan-Out
+- Each node peers directly with all upstream routers
 - No node-to-node peering
 
 ```
@@ -131,33 +190,13 @@ Characteristics:
 Pros:
 - Simple mental model
 - Fast convergence
-- Clear failure boundaries
+- No RR dependency
 
 Cons:
-- Session count grows with number of nodes
+- Session count grows with number of nodes (not scalable)
+- Each upstream must maintain sessions to all nodes
 
-### 6.2 Alternative Model: iBGP with Route Reflectors
-- Nodes peer only with route reflectors
-- Reflectors peer with upstream routers
-
-```
-  [Upstream-1]    [Upstream-2]
-         |              |
-    +----+----+    +----+----+
-    |         |    |         |
-  [RR-1]    [RR-2]  (Route Reflectors, AS 64512)
-    |         |
-+---+----+----+---+
-|   |    |    |   |
-[cp-1] [worker-1] [worker-2] [worker-N]
-```
-
-Pros:
-- Scales better
-
-Cons:
-- Additional control-plane complexity
-- Reflector failure becomes critical
+Use case: Only appropriate for very small deployments (< 5 nodes) or testing.
 
 ## 7. Route Advertisement and Policy
 ### 7.1 Advertised Prefixes
