@@ -1,0 +1,5 @@
+- [ ] **Iterate on BGP policies**: Experiment with route filtering
+- [ ] **Add network policies**: Test Cilium network policy enforcement
+- [ ] **Stress test**: Deploy resource-intensive workloads
+- [ ] **Observability**: Configure Prometheus + Grafana for metrics
+- [ ] **Disaster recovery**: Practice etcd backup/restore
