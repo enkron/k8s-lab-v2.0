@@ -3,26 +3,26 @@
 # Variables
 QEMU := qemu-system-aarch64
 FIRMWARE := $(shell nix build nixpkgs#OVMF.fd --print-out-paths --no-link)/FV/QEMU_EFI.fd
-NODES := cp-1 worker-1 worker-2 upstream-router
+NODES := control-plane-1 worker-1 worker-2 upstream-router
 MCAST_ADDR := 230.0.0.1:1234
 
 # Default target
 help:
 	@echo "Kubernetes Lab v2.0 - Available targets:"
-	@echo "  make images        - Download/prepare base VM images"
-	@echo "  make cloud-init    - Generate cloud-init ISOs"
-	@echo "  make vms           - Create VM disk images from base"
-	@echo "  make up            - Start all VMs"
-	@echo "  make up-cp-1       - Start control plane node"
-	@echo "  make up-worker-1   - Start worker-1"
-	@echo "  make up-worker-2   - Start worker-2"
-	@echo "  make up-upstream   - Start upstream router"
-	@echo "  make down          - Stop all VMs"
-	@echo "  make status        - Show VM status"
-	@echo "  make ssh-<node>    - SSH to node (e.g., make ssh-cp-1)"
-	@echo "  make console-<node>- Serial console to node"
-	@echo "  make clean         - Remove generated files"
-	@echo "  make nuke          - Remove everything including images"
+	@echo "  make images             - Download/prepare base VM images"
+	@echo "  make cloud-init         - Generate cloud-init ISOs"
+	@echo "  make vms                - Create VM disk images from base"
+	@echo "  make up                 - Start all VMs"
+	@echo "  make up-control-plane-1 - Start control plane node"
+	@echo "  make up-worker-1        - Start worker-1"
+	@echo "  make up-worker-2        - Start worker-2"
+	@echo "  make up-upstream        - Start upstream router"
+	@echo "  make down               - Stop all VMs"
+	@echo "  make status             - Show VM status"
+	@echo "  make ssh-<node>         - SSH to node (e.g., make ssh-control-plane-1)"
+	@echo "  make console-<node>     - Serial console to node"
+	@echo "  make clean              - Remove generated files"
+	@echo "  make nuke               - Remove everything including images"
 
 # Download base cloud image
 images:
@@ -48,25 +48,25 @@ disks/%.qcow2: images/debian-12-generic-arm64.qcow2
 	qemu-img resize $@ 20G
 
 # Start all VMs
-up: up-upstream up-cp-1 up-worker-1 up-worker-2
+up: up-upstream up-control-plane-1 up-worker-1 up-worker-2
 
 # Start individual VMs (run in background)
-up-cp-1: disks/cp-1.qcow2 cloud-init/cp-1/seed.iso
-	@echo "Starting cp-1..."
+up-control-plane-1: disks/control-plane-1.qcow2 cloud-init/control-plane-1/seed.iso
+	@echo "Starting control-plane-1..."
 	$(QEMU) \
-		-name cp-1 \
+		-name control-plane-1 \
 		-machine virt,accel=hvf,highmem=on \
 		-cpu host -smp 2 -m 4G \
 		-bios $(FIRMWARE) \
-		-drive file=disks/cp-1.qcow2,if=virtio,format=qcow2 \
-		-drive file=cloud-init/cp-1/seed.iso,if=virtio,format=raw \
+		-drive file=disks/control-plane-1.qcow2,if=virtio,format=qcow2 \
+		-drive file=cloud-init/control-plane-1/seed.iso,if=virtio,format=raw \
 		-netdev user,id=mgmt,hostfwd=tcp::2201-:22,hostfwd=tcp::6443-:6443 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
 		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:01 \
-		-pidfile /tmp/qemu-cp-1.pid \
+		-pidfile /tmp/qemu-control-plane-1.pid \
 		-daemonize -display none \
-		-serial unix:/tmp/qemu-cp-1.sock,server,nowait
+		-serial unix:/tmp/qemu-control-plane-1.sock,server,nowait
 
 up-worker-1: disks/worker-1.qcow2 cloud-init/worker-1/seed.iso
 	@echo "Starting worker-1..."
@@ -140,7 +140,7 @@ status:
 	done
 
 # SSH access
-ssh-cp-1:
+ssh-control-plane-1:
 	ssh -p 2201 k8s@localhost
 
 ssh-worker-1:

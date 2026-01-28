@@ -34,28 +34,28 @@ At a high level, the topology follows a hierarchical, spine–leaf-inspired mode
 adapted for a lab environment:
 
 ```
-         [External Network]
-                |
-      +---------+---------+
-      |                   |
-[Upstream-1]        [Upstream-2]   <- Edge routers (AS 64513)
-   (AS 64513)        (AS 64513)
-      |                   |
-      +--------+----------+
-               |
-          eBGP peering
-               |
-      +--------+----------+
-      |                   |
-   [RR-1]              [RR-2]      <- Route Reflectors (AS 64512)
-      |                   |
-      +----+----+----+----+
-           |    |    |
-        iBGP peering
-           |    |    |
-      [cp-1] [worker-1] [worker-2] <- K8s nodes (AS 64512)
-           |    |    |
-       [Pods] [Pods] [Pods]
+              [External Network]
+                     |
+           +---------+---------+
+           |                   |
+     [Upstream-1]        [Upstream-2]   <- Edge routers (AS 64513)
+        (AS 64513)        (AS 64513)
+           |                   |
+           +--------+----------+
+                    |
+               eBGP peering
+                    |
+           +--------+----------+
+           |                   |
+        [RR-1]              [RR-2]      <- Route Reflectors (AS 64512)
+           |                   |
+           +----+----+----+----+
+                |    |    |
+               iBGP peering
+                |    |    |
+  [control-plane-1] [worker-1] [worker-2] <- K8s nodes (AS 64512)
+                |    |    |
+            [Pods] [Pods] [Pods]
 ```
 
 - Edge / Upstream Routers (AS 64513)
@@ -134,24 +134,24 @@ Characteristics:
 - Route Reflectors reflect routes between nodes without requiring full mesh
 
 ```
-  [Upstream-1]    [Upstream-2]
-   (AS 64513)      (AS 64513)
-         |              |
-         +------+-------+
-                |
-          eBGP peering
-                |
-    +-----+-----+-----+-----+
-    |                       |
-  [RR-1]                 [RR-2]
-(AS 64512)             (AS 64512)
-    |                       |
-    +----+----+----+----+---+
-         |    |    |
-      iBGP peering (client sessions)
-         |    |    |
-      [cp-1] [worker-1] [worker-2]
-     (AS 64512)
+           [Upstream-1]    [Upstream-2]
+            (AS 64513)      (AS 64513)
+                  |              |
+                  +------+-------+
+                         |
+                   eBGP peering
+                         |
+       +-----+-----------+-----+---------+
+       |                                 |
+     [RR-1]                            [RR-2]
+   (AS 64512)                        (AS 64512)
+       |                                 |
+       +----+------------+------+----+---+
+            |            |           |
+          iBGP peering (client sessions)
+            |            |           |
+  [control-plane-1] [worker-1] [worker-2]
+                 (AS 64512)
 ```
 
 Pros:
@@ -174,17 +174,17 @@ Implementation notes:
 - No node-to-node peering
 
 ```
-[Upstream-1]              [Upstream-2]
-     |  \                  /  |
-     |   \                /   |
-     |    \              /    |
-     |     \            /     |
-     |      \          /      |
-     |       \        /       |
-     |        \      /        |
-     |         \    /         |
-  [cp-1]   [worker-1]   [worker-2]
-(AS 64512)  (AS 64512)   (AS 64512)
+          [Upstream-1]           [Upstream-2]
+              |  \                  /  |
+              |   \                /   |
+              |    \              /    |
+              |     \            /     |
+              |      \          /      |
+              |       \        /       |
+              |        \      /        |
+              |         \    /         |
+  [control-plane-1]   [worker-1]   [worker-2]
+     (AS 64512)       (AS 64512)   (AS 64512)
 ```
 
 Pros:
@@ -206,7 +206,7 @@ Nodes may advertise:
 - Node loopback addresses (for control-plane stability)
 
 Example:
-- cp-1 advertises: fd00:100::10/128 (node), 10.244.0.0/24 (pod CIDR)
+- control-plane-1 advertises: fd00:100::10/128 (node), 10.244.0.0/24 (pod CIDR)
 - worker-1 advertises: fd00:100::11/128 (node), 10.244.1.0/24 (pod CIDR)
 - worker-2 advertises: fd00:100::12/128 (node), 10.244.2.0/24 (pod CIDR)
 

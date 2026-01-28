@@ -102,11 +102,11 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 
 ### 2.1 VM Specifications
 
-| Node | vCPU | RAM | Disk | NICs |
-|------|------|-----|------|------|
-| cp-1 | 2 | 4GB | 20GB | 2 |
-| worker-1 | 2 | 4GB | 20GB | 2 |
-| worker-2 | 2 | 4GB | 20GB | 2 |
+| Node            | vCPU | RAM | Disk | NICs |
+|-----------------|------|-----|------|------|
+| control-plane-1 | 2    | 4GB | 20GB | 2    |
+| worker-1        | 2    | 4GB | 20GB | 2    |
+| worker-2        | 2    | 4GB | 20GB | 2    |
 
 ### 2.2 Implementation Steps
 
@@ -115,13 +115,13 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 1. Download cloud image (qcow2 format) for chosen distro
 2. Create backing image for CoW (copy-on-write) efficiency:
    ```bash
-   qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 cp-1.qcow2
+   qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 control-plane-1.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 worker-1.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 worker-2.qcow2
    ```
 3. Resize disk images as needed:
    ```bash
-   qemu-img resize cp-1.qcow2 +15G
+   qemu-img resize control-plane-1.qcow2 +15G
    ```
 
 #### Step 2.2.2: Prepare cloud-init Configuration
@@ -135,7 +135,7 @@ Create `user-data` and `meta-data` files per node for:
 ```yaml
 # Example user-data structure
 #cloud-config
-hostname: cp-1
+hostname: control-plane-1
 users:
   - name: k8s
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -165,7 +165,7 @@ Create per-node launch scripts. Run from Nix devShell where QEMU is available:
 
 ```bash
 #!/usr/bin/env bash
-# cp-1.sh - Control plane node (macOS/HVF/aarch64)
+# control-plane-1.sh - Control plane node (macOS/HVF/aarch64)
 
 # EDK2 firmware - adjust path based on your Nix setup
 # Option 1: If using flake devShell with qemu
@@ -175,14 +175,14 @@ FIRMWARE="${QEMU_EFI:-./edk2-aarch64-code.fd}"
 # FIRMWARE="$(nix build nixpkgs#OVMF.fd --print-out-paths --no-link)/FV/QEMU_EFI.fd"
 
 qemu-system-aarch64 \
-  -name cp-1 \
+  -name control-plane-1 \
   -machine virt,accel=hvf,highmem=on \
   -cpu host \
   -smp 2 \
   -m 4G \
   -bios "${FIRMWARE}" \
-  -drive file=cp-1.qcow2,if=virtio,format=qcow2 \
-  -drive file=cp-1-seed.iso,if=virtio,format=raw \
+  -drive file=control-plane-1.qcow2,if=virtio,format=qcow2 \
+  -drive file=control-plane-1-seed.iso,if=virtio,format=raw \
   -netdev user,id=mgmt,hostfwd=tcp::2201-:22,hostfwd=tcp::6443-:6443 \
   -device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
   -netdev socket,id=internal,mcast=230.0.0.1:1234 \
@@ -288,11 +288,11 @@ ls /sys/fs/cgroup/  # Should show controllers like cpu, memory, io
 
 ### 4.1 IP Addressing Scheme
 
-| Node | Management NIC (eth0) | Internal NIC (eth1) |
-|------|----------------------|---------------------|
-| cp-1 | 192.168.100.10/24 (DHCP via QEMU) | fd00:100::10/64 |
-| worker-1 | 192.168.100.11/24 | fd00:100::11/64 |
-| worker-2 | 192.168.100.12/24 | fd00:100::12/64 |
+| Node            | Management NIC (eth0)             | Internal NIC (eth1) |
+|-----------------|-----------------------------------|---------------------|
+| control-plane-1 | 192.168.100.10/24 (DHCP via QEMU) | fd00:100::10/64     |
+| worker-1        | 192.168.100.11/24                 | fd00:100::11/64     |
+| worker-2        | 192.168.100.12/24                 | fd00:100::12/64     |
 
 ### 4.2 Implementation Steps
 
@@ -308,7 +308,7 @@ ip link show
 Using systemd-networkd (recommended for predictability):
 
 ```bash
-# /etc/systemd/network/20-internal.network (cp-1 example)
+# /etc/systemd/network/20-internal.network (control-plane-1 example)
 [Match]
 Name=eth1  # Adjust to actual interface name
 
@@ -346,7 +346,7 @@ sudo networkctl status eth1
 - [ ] No SLAAC addresses present (only static fd00:100::XX)
 - [ ] Nodes can ping each other via IPv6:
   ```bash
-  ping6 -c 3 fd00:100::11  # From cp-1 to worker-1
+  ping6 -c 3 fd00:100::11  # From control-plane-1 to worker-1
   ```
 
 ---
@@ -370,10 +370,10 @@ The upstream router simulates edge/ToR infrastructure and provides:
 
 ### 5.2 IP Addressing
 
-| Component | Address |
-|-----------|---------|
+| Component                  | Address        |
+|----------------------------|----------------|
 | Upstream Router (internal) | fd00:100::1/64 |
-| AS Number | 64513 |
+| AS Number                  | 64513          |
 
 ### 5.3 Implementation Steps
 
@@ -416,7 +416,7 @@ router bgp 64513
  !
  ! eBGP peers to Route Reflectors
  neighbor fd00:100::10 remote-as 64512
- neighbor fd00:100::10 description rr-cp-1
+ neighbor fd00:100::10 description rr-control-plane-1
  !
  address-family ipv4 unicast
   ! Advertise default route
@@ -462,11 +462,11 @@ ipv6 route ::/0 Null0
 
 ### 5.2 Pod CIDR Allocation
 
-| Node | Pod CIDR (IPv4) | Pod CIDR (IPv6) |
-|------|-----------------|-----------------|
-| cp-1 | 10.244.0.0/24 | fd00:244:0::/64 |
-| worker-1 | 10.244.1.0/24 | fd00:244:1::/64 |
-| worker-2 | 10.244.2.0/24 | fd00:244:2::/64 |
+| Node            | Pod CIDR (IPv4) | Pod CIDR (IPv6) |
+|-----------------|-----------------|-----------------|
+| control-plane-1 | 10.244.0.0/24   | fd00:244:0::/64 |
+| worker-1        | 10.244.1.0/24   | fd00:244:1::/64 |
+| worker-2        | 10.244.2.0/24   | fd00:244:2::/64 |
 
 ### 5.3 Implementation Steps
 
@@ -497,25 +497,25 @@ sudo systemctl restart frr
 The topology uses eBGP at the edge (upstream routers) and iBGP internally with Route Reflectors:
 
 ```
-  [Upstream Router]     (AS 64513, runs on host or separate VM)
-         |
-    eBGP peering
-         |
-  [Route Reflector]     (AS 64512, co-located on cp-1)
-         |
-    iBGP client sessions
-         |
-  +------+------+
-  |      |      |
-[cp-1] [wrk-1] [wrk-2]  (AS 64512)
+              [Upstream Router]     (AS 64513, runs on host or separate VM)
+                     |
+                eBGP peering
+                     |
+              [Route Reflector]     (AS 64512, co-located on control-plane-1)
+                     |
+            iBGP client sessions
+                     |
+              +------+------+
+              |      |      |
+[control-plane-1] [wrk-1] [wrk-2]   (AS 64512)
 ```
 
-**Route Reflector configuration (cp-1)** (`/etc/frr/frr.conf`):
+**Route Reflector configuration (control-plane-1)** (`/etc/frr/frr.conf`):
 
 ```
 frr version 9.1
 frr defaults traditional
-hostname cp-1
+hostname control-plane-1
 log syslog informational
 service integrated-vtysh-config
 !
@@ -575,7 +575,7 @@ router bgp 64512
  !
  ! iBGP peer to Route Reflector only (not to other workers)
  neighbor fd00:100::10 remote-as 64512
- neighbor fd00:100::10 description route-reflector-cp-1
+ neighbor fd00:100::10 description route-reflector-control-plane-1
  !
  address-family ipv4 unicast
   network 10.244.1.0/24
@@ -660,7 +660,7 @@ KUBELET_EXTRA_ARGS="--node-ip=fd00:100::10"  # Adjust per node
 
 ### 8.1 kubeadm Configuration
 
-#### Step 8.1.1: Create kubeadm Configuration File (cp-1)
+#### Step 8.1.1: Create kubeadm Configuration File (control-plane-1)
 
 ```yaml
 # kubeadm-config.yaml
@@ -955,25 +955,25 @@ sudo tcpdump -i eth1 -n icmp6
 
 ### 11.1 Recommended Tools Summary
 
-| Category | Tool | Rationale |
-|----------|------|-----------|
-| Virtualization | QEMU | Direct control, HVF/KVM acceleration |
-| Guest OS | Debian 12 / Ubuntu 24.04 | Modern kernel, eBPF support |
-| Container Runtime | containerd | K8s default, stable |
-| K8s Bootstrap | kubeadm | Industry standard, educational |
-| CNI | Cilium | eBPF-native, BGP support, no overlays |
-| BGP Daemon | FRRouting (FRR) | Production-grade, IPv6 native |
-| Observability | Hubble | Integrated with Cilium, eBPF flows |
-| K8s TUI | k9s | Efficient cluster navigation |
+| Category          | Tool                            | Rationale                             |
+|-------------------|---------------------------------|---------------------------------------|
+| Virtualization    | QEMU                            | Direct control, HVF/KVM acceleration  |
+| Guest OS          | Debian 12 / Ubuntu 24.04        | Modern kernel, eBPF support           |
+| Container Runtime | containerd                      | K8s default, stable                   |
+| K8s Bootstrap     | kubeadm                         | Industry standard, educational        |
+| CNI               | Cilium                          | eBPF-native, BGP support, no overlays |
+| BGP Daemon        | FRRouting (FRR)                 | Production-grade, IPv6 native         |
+| Observability     | Hubble                          | Integrated with Cilium, eBPF flows    |
+| K8s TUI           | k9s                             | Efficient cluster navigation          |
 
 ### 11.2 Alternative Considerations
 
-| Component | Alternative | When to Consider |
-|-----------|-------------|------------------|
-| CNI | Calico (eBPF mode) | If Cilium proves problematic |
-| BGP | BIRD | Lighter weight, sufficient for lab |
-| Guest OS | Fedora | If newer packages needed |
-| Virtualization | libvirt | If GUI management desired |
+| Component      | Alternative        | When to Consider                   |
+|----------------|--------------------|------------------------------------|
+| CNI            | Calico (eBPF mode) | If Cilium proves problematic       |
+| BGP            | BIRD               | Lighter weight, sufficient for lab |
+| Guest OS       | Fedora             | If newer packages needed           |
+| Virtualization | libvirt            | If GUI management desired          |
 
 ### 11.3 File Structure Recommendation
 
@@ -986,16 +986,16 @@ k8s_lab_v2.0/
 │   └── implementation-plan.md
 ├── scripts/
 │   ├── qemu/
-│   │   ├── cp-1.sh
+│   │   ├── control-plane-1.sh
 │   │   ├── worker-1.sh
 │   │   └── worker-2.sh
 │   └── cloud-init/
-│       ├── cp-1/
+│       ├── control-plane-1/
 │       ├── worker-1/
 │       └── worker-2/
 ├── configs/
 │   ├── frr/
-│   │   ├── cp-1.conf
+│   │   ├── control-plane-1.conf
 │   │   ├── worker-1.conf
 │   │   └── worker-2.conf
 │   ├── systemd-network/
@@ -1032,7 +1032,7 @@ make up
 make status
 
 # SSH to control plane
-make ssh-cp-1
+make ssh-control-plane-1
 
 # Stop all VMs
 make down
@@ -1042,6 +1042,6 @@ make down
 
 ## Revision History
 
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0 | 2026-01-23 | Generated | Initial implementation plan |
+| Version | Date       | Author    | Changes                     |
+|---------|------------|-----------|-----------------------------|
+| 1.0     | 2026-01-23 | Generated | Initial implementation plan |

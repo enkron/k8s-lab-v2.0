@@ -29,23 +29,23 @@ internals, CI/CD automation, eBPF networking, and IPv6-first design.
 ## 5. Topology Overview
 ### 5.1 Logical Diagram
 ```
-                [ Host ]
-                   |
-        NAT / mgmt network (192.168.100.0/24)
-                   |
-     +-------------+-------------+
-     |                           |
- [cp-1]                       [worker-1]
-  NIC1 (mgmt)                 NIC1 (mgmt)
-  NIC2 (internal)             NIC2 (internal)
-     |                           |
-     +-------------+-------------+
-                   |
-     internal routed network (fd00:100::/64)
-                   |
-               [worker-2]
-               NIC1 (mgmt)
-               NIC2 (internal)
+                        [ Host ]
+                           |
+                NAT / mgmt network (192.168.100.0/24)
+                           |
+             +-------------+-------------+
+             |                           |
+     [control-plane-1]             [worker-1]
+        NIC1 (mgmt)                NIC1 (mgmt)
+        NIC2 (internal)            NIC2 (internal)
+             |                           |
+             +-------------+-------------+
+                           |
+             internal routed network (fd00:100::/64)
+                           |
+                       [worker-2]
+                       NIC1 (mgmt)
+                       NIC2 (internal)
 ```
 Each node is a Linux VM with two NICs: one for management/SSH/API access, one
 for Kubernetes internal traffic.
