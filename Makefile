@@ -1,14 +1,23 @@
 .PHONY: help images vms up down clean status ssh-% console-%
 
-# Variables
 QEMU := qemu-system-aarch64
-FIRMWARE := $(shell nix build nixpkgs#OVMF.fd --print-out-paths --no-link)/FV/QEMU_EFI.fd
+# We're using EDK2, which is OSS implementation of UEFI. As the target platform's aarch64 we need
+# EDK2's AAVMF (ARM Architecture Virtual Machine Firmware) build target. The nixpkgs.qemu packages
+# it under the ed2-aarch64-code.fd name.
+# We need to provide `bios` flag within the `qemu` invocation because its aarch64 target has no
+# built-in BIOS fallback (unlike x86_64 systems). Therefore ARM systems require explicit UEFI
+# firmware specification.
+#
+# UEFI basically:
+# a. Initializes hardware (sets up CPU, memory, interrupt controllers &c.).
+# b. Boots the OS (loads bootloader from hard drive GRUB/systemd-boot, reads EFI partition &c.).
+# c. Provides runtime services, like secure boot.
+FIRMWARE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
 NODES := control-plane-1 worker-1 worker-2 upstream-router
 MCAST_ADDR := 230.0.0.1:1234
 
-# Default target
 help:
-	@echo "Kubernetes Lab v2.0 - Available targets:"
+	@echo "k8s-lab-v2.0 available targets:"
 	@echo "  make images             - Download/prepare base VM images"
 	@echo "  make cloud-init         - Generate cloud-init ISOs"
 	@echo "  make vms                - Create VM disk images from base"

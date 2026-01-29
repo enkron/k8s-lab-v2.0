@@ -30,7 +30,7 @@ implementation are totally manual.
 
 ## 1. Prerequisites
 
-### 1.1 Host Machine Requirements
+### 1.1 Host Requirements
 
 | Requirement  | Specification                         |
 |--------------|---------------------------------------|
@@ -67,8 +67,8 @@ All dependencies managed via **Nix Flakes** (determinate-nixd):
 }
 ```
 
-EDK2 firmware path (Nix): `$(nix-build '<nixpkgs>' -A OVMF.fd --no-out-link)/FV/QEMU_EFI.fd`
-or use `pkgs.qemu` which typically includes firmware.
+EDK2 firmware path (Nix): QEMU bundles EDK2 firmware at
+`$(nix build nixpkgs#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd`
 
 ### 1.3 VM Guest OS Selection
 
@@ -167,12 +167,8 @@ Create per-node launch scripts. Run from Nix devShell where QEMU is available:
 #!/usr/bin/env bash
 # control-plane-1.sh - Control plane node (macOS/HVF/aarch64)
 
-# EDK2 firmware - adjust path based on your Nix setup
-# Option 1: If using flake devShell with qemu
-FIRMWARE="${QEMU_EFI:-./edk2-aarch64-code.fd}"
-
-# Option 2: Build from nixpkgs
-# FIRMWARE="$(nix build nixpkgs#OVMF.fd --print-out-paths --no-link)/FV/QEMU_EFI.fd"
+# EDK2 firmware - bundled with QEMU in Nix
+FIRMWARE="$(nix build nixpkgs#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd"
 
 qemu-system-aarch64 \
   -name control-plane-1 \
