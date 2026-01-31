@@ -19,8 +19,8 @@ MCAST_ADDR := 230.0.0.1:1234
 help:
 	@echo "k8s-lab-v2.0 available targets:"
 	@echo "  make images             - Download/prepare base VM images"
-	@echo "  make cloud-init         - Generate cloud-init ISOs"
 	@echo "  make vms                - Create VM disk images from base"
+	@echo "  make cloud-init         - Generate cloud-init ISOs"
 	@echo "  make up                 - Start all VMs"
 	@echo "  make up-control-plane-1 - Start control plane node"
 	@echo "  make up-worker-1        - Start worker-1"
@@ -35,17 +35,10 @@ help:
 
 # Download base cloud image
 images:
+	@mkdir -p images
 	@echo "Downloading Debian 12 cloud image (aarch64)..."
 	curl -L -o images/debian-12-generic-arm64.qcow2 \
 		https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
-
-# Generate cloud-init ISOs
-cloud-init: $(foreach node,$(NODES),cloud-init/$(node)/seed.iso)
-
-cloud-init/%/seed.iso: cloud-init/%/user-data cloud-init/%/meta-data
-	@echo "Generating cloud-init ISO for $*..."
-	mkisofs -output $@ -volid cidata -joliet -rock \
-		cloud-init/$*/user-data cloud-init/$*/meta-data
 
 # Create VM disks from base image
 vms: $(foreach node,$(NODES),disks/$(node).qcow2)
@@ -55,6 +48,14 @@ disks/%.qcow2: images/debian-12-generic-arm64.qcow2
 	qemu-img create -f qcow2 -b ../images/debian-12-generic-arm64.qcow2 \
 		-F qcow2 $@
 	qemu-img resize $@ 20G
+
+# Generate cloud-init ISOs
+cloud-init: $(foreach node,$(NODES),cloud-init/$(node)/seed.iso)
+
+cloud-init/%/seed.iso: cloud-init/%/user-data cloud-init/%/meta-data
+	@echo "Generating cloud-init ISO for $*..."
+	mkisofs -output $@ -volid cidata -joliet -rock \
+		cloud-init/$*/user-data cloud-init/$*/meta-data
 
 # Start all VMs
 up: up-upstream up-control-plane-1 up-worker-1 up-worker-2

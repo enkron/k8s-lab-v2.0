@@ -44,53 +44,42 @@ implementation are totally manual.
 
 ### 1.2 Required Software on Host
 
-All dependencies managed via **Nix Flakes** (determinate-nixd):
+All dependencies managed via **Nix Flakes**:
 
 ```nix
-# flake.nix devShell inputs
 {
-  # Core virtualization
-  qemu          # >= 8.0, with HVF support
-
-  # Networking utilities
-  socat         # Serial console access
-  netcat        # Connectivity testing
-
-  # Kubernetes tooling
-  kubectl       # >= 1.29
+  qemu             # >= 8.0, with HVF support
+  socat            # Serial console access
+  netcat           # Connectivity testing
+  kubectl          # >= 1.29
   kubernetes-helm  # >= 3.14
-
-  # Recommended
-  k9s           # Kubernetes TUI
-  cilium-cli    # Cilium management
-  hubble        # Cilium observability
 }
 ```
 
-EDK2 firmware path (Nix): QEMU bundles EDK2 firmware at
+UEFI firmware: QEMU bundles EDK2 (OSS implementation of UEFI) firmware at
 `$(nix build nixpkgs#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd`
 
 ### 1.3 VM Guest OS Selection
 
-**Recommended**: Debian 12 (Bookworm) or Ubuntu 24.04 LTS
+Debian 12 (Bookworm)
 
 Rationale:
-- Modern kernel (6.1+) with full eBPF support
-- **cgroup v2 unified hierarchy** enabled by default (required for modern K8s)
+- Linux kernel >= 6.1 with full eBPF support
+- cgroup v2 unified hierarchy enabled by default
 - systemd-networkd for predictable network configuration
-- Wide community support and documentation
+- Community support and documentation
 - kubeadm packages readily available
 - Native aarch64 cloud images available
+- Debian based image is lightweight and isn't bloated with desktop
+  environments.
 
-**Alternative**: Fedora 40 or Rocky Linux 9 (for RHEL-like experience)
+Alternatively: Fedora 40 or Rocky Linux 9 (for RHEL-like experience)
 
 ### 1.4 cgroup v2 Requirement
 
-Modern Kubernetes requires **cgroup v2** (unified hierarchy). Both Debian 12 and Ubuntu 24.04
-enable cgroup v2 by default. Verify with:
+cgroup v2 verification:
 
 ```bash
-# Must return "cgroup2fs"
 stat -fc %T /sys/fs/cgroup
 ```
 
@@ -112,16 +101,19 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 
 #### Step 2.2.1: Create Base VM Image
 
-1. Download cloud image (qcow2 format) for chosen distro
+1. Download cloud image (qcow2 format)
 2. Create backing image for CoW (copy-on-write) efficiency:
+
    ```bash
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 control-plane-1.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 worker-1.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 worker-2.qcow2
    ```
+
 3. Resize disk images as needed:
+
    ```bash
-   qemu-img resize control-plane-1.qcow2 +15G
+   qemu-img resize control-plane-1.qcow2 +20G
    ```
 
 #### Step 2.2.2: Prepare cloud-init Configuration
