@@ -1,4 +1,8 @@
-.PHONY: help images vms up down clean status ssh-% console-%
+# Actions
+.PHONY: help up down clean nuke status ssh-% console-%
+
+# File target aliases
+.PHONY: images vms cloud-init
 
 QEMU := qemu-system-aarch64
 # We're using EDK2, which is OSS implementation of UEFI. As the target platform's aarch64 we need
@@ -33,12 +37,16 @@ help:
 	@echo "  make clean              - Remove generated files"
 	@echo "  make nuke               - Remove everything including images"
 
-# Download base cloud image
-images:
+# Download base cloud image.
+# File target
+images/debian-12-generic-arm64.qcow2:
 	@mkdir -p images
 	@echo "Downloading Debian 12 cloud image (aarch64)..."
-	curl -L -o images/debian-12-generic-arm64.qcow2 \
+	curl -L -o $@ \
 		https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+
+# Alias for ^
+images: images/debian-12-generic-arm64.qcow2
 
 # Create VM disks from base image
 vms: $(foreach node,$(NODES),disks/$(node).qcow2)
