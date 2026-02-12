@@ -118,21 +118,102 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 
 #### Step 2.2.2: Prepare cloud-init Configuration
 
-Create `user-data` and `meta-data` files per node for:
-- Hostname configuration
-- SSH public key injection
-- Initial user creation
-- Package repository setup
+Create `user-data`, `meta-data`, and `network-config` files per node (including
+upstream-router). Files are stored under `cloud-init/<node>/`.
+
+Each node requires three files:
+
+**meta-data** — instance identity:
 
 ```yaml
-# Example user-data structure
+instance-id: <node-name>
+local-hostname: <node-name>
+```
+
+**user-data** — OS-level provisioning:
+
+```yaml
 #cloud-config
+
 hostname: control-plane-1
+manage_etc_hosts: true
+
 users:
   - name: k8s
+    gecos: Kubernetes Admin
+    groups: sudo
+    shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
     ssh_authorized_keys:
       - ssh-ed25519 AAAA... user@host
+
+growpart:
+  mode: auto
+  devices: ['/']
+
+resize_rootfs: true
+
+ssh_pwauth: false
+disable_root: true
+
+timezone: UTC
+
+package_update: true
+package_upgrade: true
+
+final_message: "cloud-init completed for control-plane-1 ($UPTIME s)"
+```
+
+Configuration details:
+- **users**: Only `k8s` user is created (replaces the default `debian` user).
+  Password login disabled; SSH key-only access.
+- **growpart/resize_rootfs**: Expands the root partition to fill the 20GB disk
+  (the base cloud image ships with a ~2GB partition).
+- **manage_etc_hosts**: Adds hostname to `/etc/hosts` so `sudo` and other tools
+  can resolve it without DNS.
+- **package_upgrade**: Runs `apt upgrade` on first boot for security patches.
+
+**network-config** — NIC configuration (cloud-init v2 format):
+
+```yaml
+version: 2
+ethernets:
+  mgmt:
+    match:
+      macaddress: "52:54:00:00:01:01"
+    dhcp4: true
+    dhcp6: false
+  internal:
+    match:
+      macaddress: "52:54:00:00:02:01"
+    dhcp4: false
+    dhcp6: false
+    optional: true
+```
+
+Network config details:
+- NICs matched by MAC address for deterministic interface binding regardless of
+  the kernel's predictable naming (enp0sX).
+- Management NIC gets IPv4 via DHCP from QEMU's built-in DHCP server.
+- Internal NIC is brought up with no addresses; static IPv6 is configured
+  manually in Phase 3.
+- `optional: true` prevents cloud-init from blocking boot while waiting for the
+  internal NIC to be fully configured.
+
+MAC address mapping (from Makefile QEMU definitions):
+
+| Node            | Management MAC      | Internal MAC        |
+|-----------------|---------------------|---------------------|
+| upstream-router | 52:54:00:00:01:00   | 52:54:00:00:02:00   |
+| control-plane-1 | 52:54:00:00:01:01   | 52:54:00:00:02:01   |
+| worker-1        | 52:54:00:00:01:02   | 52:54:00:00:02:02   |
+| worker-2        | 52:54:00:00:01:03   | 52:54:00:00:02:03   |
+
+Generate seed ISOs (requires `mkisofs` from `cdrtools`):
+
+```bash
+make cloud-init
 ```
 
 #### Step 2.2.3: Create Virtual Networks
@@ -967,20 +1048,23 @@ sudo tcpdump -i eth1 -n icmp6
 
 ```
 k8s_lab_v2.0/
-├── docs/
-│   ├── architecture/
-│   │   ├── overview.md
-│   │   └── bgp-topology.md
-│   └── implementation-plan.md
-├── scripts/
-│   ├── qemu/
-│   │   ├── control-plane-1.sh
-│   │   ├── worker-1.sh
-│   │   └── worker-2.sh
-│   └── cloud-init/
-│       ├── control-plane-1/
-│       ├── worker-1/
-│       └── worker-2/
+├── cloud-init/
+│   ├── control-plane-1/
+│   │   ├── meta-data
+│   │   ├── user-data
+│   │   └── network-config
+│   ├── worker-1/
+│   │   ├── meta-data
+│   │   ├── user-data
+│   │   └── network-config
+│   ├── worker-2/
+│   │   ├── meta-data
+│   │   ├── user-data
+│   │   └── network-config
+│   └── upstream-router/
+│       ├── meta-data
+│       ├── user-data
+│       └── network-config
 ├── configs/
 │   ├── frr/
 │   │   ├── control-plane-1.conf
@@ -990,6 +1074,13 @@ k8s_lab_v2.0/
 │   │   └── 20-internal.network
 │   └── kubeadm/
 │       └── kubeadm-config.yaml
+├── disks/                          # Generated: VM disk images (CoW from base)
+├── docs/
+│   ├── architecture/
+│   │   ├── overview.md
+│   │   └── bgp-topology.md
+│   └── implementation-plan.md
+├── images/                         # Downloaded: base cloud images
 ├── manifests/
 │   ├── cilium-bgp-peering.yaml
 │   └── test-workloads/
@@ -1004,14 +1095,11 @@ k8s_lab_v2.0/
 # Download base image
 make images
 
-# Create cloud-init configurations (manual step - see Phase 2)
-# ... edit cloud-init/<node>/user-data and meta-data ...
-
-# Generate cloud-init ISOs
-make cloud-init
-
 # Create VM disks
 make vms
+
+# Generate cloud-init ISOs (from cloud-init/<node>/{user-data,meta-data,network-config})
+make cloud-init
 
 # Start all VMs
 make up

@@ -53,17 +53,18 @@ vms: $(foreach node,$(NODES),disks/$(node).qcow2)
 
 disks/%.qcow2: images/debian-12-generic-arm64.qcow2
 	@mkdir -p disks
-	qemu-img create -f qcow2 -b ../images/debian-12-generic-arm64.qcow2 \
-		-F qcow2 $@
+	qemu-img create -f qcow2 -b ../images/debian-12-generic-arm64.qcow2 -F qcow2 $@
 	qemu-img resize $@ 20G
 
-# Generate cloud-init ISOs
+# Generate cloud-init seed ISOs.
+# QEMU's NoCloud datasource reads these at first boot to provision the VM: user-data (user account,
+# SSH keys, packages), meta-data (instance identity, hostname), and network-config (NIC setup by MAC).
 cloud-init: $(foreach node,$(NODES),cloud-init/$(node)/seed.iso)
 
-cloud-init/%/seed.iso: cloud-init/%/user-data cloud-init/%/meta-data
+cloud-init/%/seed.iso: cloud-init/%/user-data cloud-init/%/meta-data cloud-init/%/network-config
 	@echo "Generating cloud-init ISO for $*..."
 	mkisofs -output $@ -volid cidata -joliet -rock \
-		cloud-init/$*/user-data cloud-init/$*/meta-data
+		cloud-init/$*/user-data cloud-init/$*/meta-data cloud-init/$*/network-config
 
 # Start all VMs
 up: up-upstream up-control-plane-1 up-worker-1 up-worker-2
