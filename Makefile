@@ -70,6 +70,17 @@ cloud-init/%/seed.iso: cloud-init/%/user-data cloud-init/%/meta-data cloud-init/
 up: up-upstream up-control-plane-1 up-worker-1 up-worker-2
 
 # Start individual VMs (run in background)
+#
+# Two NICs per VM:
+#   mgmt (user-mode NAT): host SSH/API access via port forwarding, no host privileges needed.
+#   internal (mcast socket): VMs exchange Ethernet frames as UDP multicast datagrams through
+#     the host network stack — all instances join group 230.0.0.1:1234, forming a shared L2
+#     segment. Avoids bridge/tap setup which requires extra privileges on macOS.
+#     230.0.0.1 is an arbitrary address in the multicast range (224.0.0.0/4).
+# Stable MAC addresses let cloud-init network-config bind NICs deterministically.
+# virt,accel=hvf: ARM VM with macOS Hypervisor.framework; highmem=on for >4GB address space.
+# -bios: aarch64 has no BIOS fallback — explicit UEFI (EDK2 AAVMF) required.
+# -serial unix:...: console via Unix socket (access: make console-<node>).
 up-control-plane-1: disks/control-plane-1.qcow2 cloud-init/control-plane-1/seed.iso
 	@echo "Starting control-plane-1..."
 	$(QEMU) \
@@ -171,7 +182,10 @@ ssh-worker-2:
 ssh-upstream:
 	ssh -p 2200 k8s@localhost
 
-# Serial console access
+# Serial console access via Unix socket exposed by QEMU's -serial flag.
+# socat bridges stdin/stdout to the socket in raw mode (no line buffering, no local echo)
+# giving a direct terminal to the VM's serial port — useful when SSH is unavailable
+# (e.g. broken networking, early boot debugging, kernel panics).
 console-%:
 	socat -,raw,echo=0 unix-connect:/tmp/qemu-$*.sock
 
