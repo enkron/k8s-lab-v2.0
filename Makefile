@@ -45,7 +45,6 @@ images/debian-12-generic-arm64.qcow2:
 	curl -L -o $@ \
 		https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
 
-# Alias for ^
 images: images/debian-12-generic-arm64.qcow2
 
 # Create VM disks from base image
