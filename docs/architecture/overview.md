@@ -115,7 +115,7 @@ The network design separates three layers:
 3. Service Network - virtual IPs for Kubernetes Services
 
 All routing decisions are explicit and inspectable. See [Design
-Principles](#design-principles).
+Principles](#4.-design-principles).
 
 ### 8.1 Terminology and CIDRs
 | Term            | Meaning                              | Example/CIDR      |
