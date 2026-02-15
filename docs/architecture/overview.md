@@ -59,11 +59,11 @@ scripts may wrap QEMU for convenience.
 ### 6.2 Node Model
 Initial cluster topology:
 
-| Role            | Count | vCPU | RAM   | Description                                          |
-|-----------------|-------|------|-------|------------------------------------------------------|
-| Upstream Router | 1     | 1    | 512MB | FRR-based edge router; eBGP peer, default gateway    |
-| Control Plane   | 1     | 2    | 2GB   | kube-apiserver, scheduler, controller-manager, etcd   |
-| Worker Node     | 2     | 2    | 2GB   | Run workloads and CNI datapath                        |
+| Role            | Count | vCPU | RAM   | Description                                         |
+|-----------------|-------|------|-------|-----------------------------------------------------|
+| Upstream Router | 1     | 1    | 512MB | FRR-based edge router; eBGP peer, default gateway   |
+| Control Plane   | 1     | 2    | 2GB   | kube-apiserver, scheduler, controller-manager, etcd |
+| Worker Node     | 2     | 2    | 2GB   | Run workloads and CNI datapath                      |
 
 Each node is a full Linux VM.
 
@@ -101,8 +101,8 @@ only control-plane BGP sessions and forwards no data-plane traffic in the
 current design.
 
 ## 7. Kubernetes Bootstrapping Model
-- Cluster is initialized using kubeadm.
-- etcd runs as a static pod on the control-plane node.
+- Cluster is initialized using `kubeadm`.
+- `etcd` runs as a static pod on the control-plane node.
 - No managed Kubernetes distributions are used.
 
 This preserves visibility into TLS bootstrap, certificate rotation, component
@@ -114,7 +114,8 @@ The network design separates three layers:
 2. Pod Network - workload IP addressing and routing
 3. Service Network - virtual IPs for Kubernetes Services
 
-All routing decisions are explicit and inspectable. See Design Principles.
+All routing decisions are explicit and inspectable. See [Design
+Principles](#design-principles).
 
 ### 8.1 Terminology and CIDRs
 | Term            | Meaning                              | Example/CIDR      |
@@ -228,12 +229,12 @@ Assumptions:
 - Kernel-level datapath visibility.
 
 ## 14. Review Checklist
-This design answers "yes" to:
-- Can it be implemented manually?
-- Can every packet path be traced?
-- Does it scale conceptually to production?
-- Can it evolve without rewrites?
-- Does it encourage learning, not hiding complexity?
+This design allows to:
+- Be implemented manually.
+- Trace every packet path.
+- Scale conceptually to production.
+- Evolve without significant rewrites.
+- Learning (no / almost no hidden complexity)
 
 ## 15. Status
 This document represents the baseline architecture. All future changes should
