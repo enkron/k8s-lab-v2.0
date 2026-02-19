@@ -19,6 +19,11 @@ QEMU := qemu-system-aarch64
 FIRMWARE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
 NODES := control-plane-1 worker-1 worker-2 upstream-router
 MCAST_ADDR := 230.0.0.1:1234
+MGMT_NET := 192.168.100.0/24
+MGMT_CP_IP := 192.168.100.10
+MGMT_W1_IP := 192.168.100.11
+MGMT_W2_IP := 192.168.100.12
+MGMT_UPSTREAM_IP := 192.168.100.13
 
 help:
 	@echo "k8s-lab-v2.0 available targets:"
@@ -77,6 +82,7 @@ up: up-upstream up-control-plane-1 up-worker-1 up-worker-2
 #     segment. Avoids bridge/tap setup which requires extra privileges on macOS.
 #     230.0.0.1 is an arbitrary address in the multicast range (224.0.0.0/4).
 # Stable MAC addresses let cloud-init network-config bind NICs deterministically.
+# Management IPv4 is statically configured in cloud-init for all nodes.
 # virt,accel=hvf: ARM VM with macOS Hypervisor.framework; highmem=on for >4GB address space.
 # -bios: aarch64 has no BIOS fallback — explicit UEFI (EDK2 AAVMF) required.
 # -serial unix:...: console via Unix socket (access: make console-<node>).
@@ -89,7 +95,7 @@ up-control-plane-1: disks/control-plane-1.qcow2 cloud-init/control-plane-1/seed.
 		-bios $(FIRMWARE) \
 		-drive file=disks/control-plane-1.qcow2,if=virtio,format=qcow2 \
 		-drive file=cloud-init/control-plane-1/seed.iso,if=virtio,format=raw \
-		-netdev user,id=mgmt,hostfwd=tcp::2201-:22,hostfwd=tcp::6443-:6443 \
+		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2201-$(MGMT_CP_IP):22,hostfwd=tcp::6443-$(MGMT_CP_IP):6443 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
 		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:01 \
@@ -106,7 +112,7 @@ up-worker-1: disks/worker-1.qcow2 cloud-init/worker-1/seed.iso
 		-bios $(FIRMWARE) \
 		-drive file=disks/worker-1.qcow2,if=virtio,format=qcow2 \
 		-drive file=cloud-init/worker-1/seed.iso,if=virtio,format=raw \
-		-netdev user,id=mgmt,hostfwd=tcp::2202-:22 \
+		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2202-$(MGMT_W1_IP):22 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:02 \
 		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:02 \
@@ -123,7 +129,7 @@ up-worker-2: disks/worker-2.qcow2 cloud-init/worker-2/seed.iso
 		-bios $(FIRMWARE) \
 		-drive file=disks/worker-2.qcow2,if=virtio,format=qcow2 \
 		-drive file=cloud-init/worker-2/seed.iso,if=virtio,format=raw \
-		-netdev user,id=mgmt,hostfwd=tcp::2203-:22 \
+		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2203-$(MGMT_W2_IP):22 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:03 \
 		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:03 \
@@ -140,7 +146,7 @@ up-upstream: disks/upstream-router.qcow2 cloud-init/upstream-router/seed.iso
 		-bios $(FIRMWARE) \
 		-drive file=disks/upstream-router.qcow2,if=virtio,format=qcow2 \
 		-drive file=cloud-init/upstream-router/seed.iso,if=virtio,format=raw \
-		-netdev user,id=mgmt,hostfwd=tcp::2200-:22 \
+		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2200-$(MGMT_UPSTREAM_IP):22 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:00 \
 		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:00 \

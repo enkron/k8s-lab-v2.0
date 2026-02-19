@@ -3,8 +3,14 @@ ethernets:
   mgmt:
     match:
       macaddress: "52:54:00:00:01:02"
-    dhcp4: true
+    dhcp4: false
     dhcp6: false
+    addresses:
+      - 192.168.100.11/24
+    gateway4: 192.168.100.2
+    nameservers:
+      addresses:
+        - 192.168.100.3
   internal:
     match:
       macaddress: "52:54:00:00:02:02"

@@ -93,9 +93,13 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 
 | Node            | vCPU | RAM | Disk | NICs |
 |-----------------|------|-----|------|------|
+| upstream-router | 1    | 512MB | 20GB | 2  |
 | control-plane-1 | 2    | 4GB | 20GB | 2    |
 | worker-1        | 2    | 4GB | 20GB | 2    |
 | worker-2        | 2    | 4GB | 20GB | 2    |
+
+The lab runs **4 VMs total**: 1 upstream router + 1 control plane + 2 workers.
+The upstream router is infrastructure-only (no kubelet/container runtime).
 
 ### 2.2 Implementation Steps
 
@@ -105,6 +109,7 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 2. Create backing image for CoW (copy-on-write) efficiency:
 
    ```bash
+   qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 upstream-router.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 control-plane-1.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 worker-1.qcow2
    qemu-img create -f qcow2 -b base-image.qcow2 -F qcow2 worker-2.qcow2
@@ -113,7 +118,10 @@ If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmd
 3. Resize disk images as needed:
 
    ```bash
-   qemu-img resize control-plane-1.qcow2 +20G
+   qemu-img resize upstream-router.qcow2 20G
+   qemu-img resize control-plane-1.qcow2 20G
+   qemu-img resize worker-1.qcow2 20G
+   qemu-img resize worker-2.qcow2 20G
    ```
 
 #### Step 2.2.2: Prepare cloud-init Configuration
@@ -182,8 +190,14 @@ ethernets:
   mgmt:
     match:
       macaddress: "52:54:00:00:01:01"
-    dhcp4: true
+    dhcp4: false
     dhcp6: false
+    addresses:
+      - 192.168.100.10/24
+    gateway4: 192.168.100.2
+    nameservers:
+      addresses:
+        - 192.168.100.3
   internal:
     match:
       macaddress: "52:54:00:00:02:01"
@@ -195,7 +209,11 @@ ethernets:
 Network config details:
 - NICs matched by MAC address for deterministic interface binding regardless of
   the kernel's predictable naming (enp0sX).
-- Management NIC gets IPv4 via DHCP from QEMU's built-in DHCP server.
+- Management IPv4 addresses are deterministic:
+  - `control-plane-1`: static `192.168.100.10/24`
+  - `worker-1`: static `192.168.100.11/24`
+  - `worker-2`: static `192.168.100.12/24`
+  - `upstream-router`: static `192.168.100.13/24`
 - Internal NIC is brought up with no addresses; static IPv6 is configured
   manually in Phase 3.
 - `optional: true` prevents cloud-init from blocking boot while waiting for the
@@ -220,7 +238,12 @@ make cloud-init
 
 **Network 1: Management (NAT)**
 - QEMU user-mode networking with port forwarding
-- SSH access via host ports (e.g., 2201, 2202, 2203)
+- Deterministic addressing on `192.168.100.0/24`:
+  - `control-plane-1`: `192.168.100.10` (static in cloud-init)
+  - `worker-1`: `192.168.100.11` (static in cloud-init)
+  - `worker-2`: `192.168.100.12` (static in cloud-init)
+  - `upstream-router`: `192.168.100.13` (static in cloud-init)
+- SSH access via host ports (e.g., 2200, 2201, 2202, 2203)
 
 **Network 2: Internal (L3 Routed)**
 - QEMU socket or multicast networking for inter-VM communication
@@ -252,7 +275,7 @@ qemu-system-aarch64 \
   -bios "${FIRMWARE}" \
   -drive file=control-plane-1.qcow2,if=virtio,format=qcow2 \
   -drive file=control-plane-1-seed.iso,if=virtio,format=raw \
-  -netdev user,id=mgmt,hostfwd=tcp::2201-:22,hostfwd=tcp::6443-:6443 \
+  -netdev user,id=mgmt,net=192.168.100.0/24,hostfwd=tcp::2201-192.168.100.10:22,hostfwd=tcp::6443-192.168.100.10:6443 \
   -device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
   -netdev socket,id=internal,mcast=230.0.0.1:1234 \
   -device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:01 \
@@ -262,7 +285,7 @@ qemu-system-aarch64 \
 
 #### Step 2.2.5: Verification Checklist
 
-- [ ] All three VMs boot successfully
+- [ ] All four VMs boot successfully
 - [ ] SSH access works via management network
 - [ ] Serial console accessible
 - [ ] Internal NIC visible on each VM (`ip link`)
@@ -271,7 +294,10 @@ qemu-system-aarch64 \
 
 ## 3. Phase 2: Base OS Configuration
 
-### 3.1 Implementation Steps (All Nodes)
+### 3.1 Implementation Steps (Kubernetes Nodes Only)
+
+Applies to `control-plane-1`, `worker-1`, and `worker-2`.
+Do **not** install Kubernetes components on `upstream-router`.
 
 #### Step 3.1.1: System Updates
 
@@ -359,9 +385,10 @@ ls /sys/fs/cgroup/  # Should show controllers like cpu, memory, io
 
 | Node            | Management NIC (eth0)             | Internal NIC (eth1) |
 |-----------------|-----------------------------------|---------------------|
-| control-plane-1 | 192.168.100.10/24 (DHCP via QEMU) | fd00:100::10/64     |
-| worker-1        | 192.168.100.11/24                 | fd00:100::11/64     |
-| worker-2        | 192.168.100.12/24                 | fd00:100::12/64     |
+| upstream-router | 192.168.100.13/24 (static)        | fd00:100::1/64      |
+| control-plane-1 | 192.168.100.10/24 (static)        | fd00:100::10/64     |
+| worker-1        | 192.168.100.11/24 (static)        | fd00:100::11/64     |
+| worker-2        | 192.168.100.12/24 (static)        | fd00:100::12/64     |
 
 ### 4.2 Implementation Steps
 
@@ -393,6 +420,11 @@ Gateway=fd00:100::11
 Destination=fd00:100::12/128
 Gateway=fd00:100::12
 ```
+
+Use the same pattern on `upstream-router`, with:
+- `Address=fd00:100::1/64`
+- `IPv6AcceptRA=no`
+- no kubelet/node-level settings
 
 **Critical**: Set `IPv6AcceptRA=no` to disable SLAAC per architecture requirements.
 
@@ -427,26 +459,36 @@ The upstream router simulates edge/ToR infrastructure and provides:
 - eBGP peering point for Route Reflectors
 - North-south connectivity simulation
 
-### 5.1 Upstream Router Options
+### 5.1 Architectural Role and Scope
+
+- Boundary node between cluster AS `64512` and upstream AS `64513`.
+- Not a Kubernetes node: no kubelet, kubeadm, kube-proxy, or CNI agent.
+- Runs FRRouting (FRR) only, advertising `0.0.0.0/0` and `::/0` to the cluster.
+- Receives Pod/Service routes from AS `64512` for north-south reachability tests.
+
+### 5.2 Upstream Router Options
 
 | Option | Description | Complexity |
 |--------|-------------|------------|
+| Dedicated VM | Lightweight Linux VM with FRR (architecture-aligned) | Medium |
 | Host-based FRR | Run FRR on macOS host | Low |
-| Dedicated VM | Lightweight Linux VM with FRR | Medium |
 | Container | FRR in Docker/Podman | Low |
 
-**Recommended**: Host-based FRR or dedicated lightweight VM for full isolation.
+**Recommended**: Dedicated VM. Host/container variants are acceptable for quick
+experimentation but deviate from the architecture baseline.
 
-### 5.2 IP Addressing
+### 5.3 IP Addressing and ASN
 
 | Component                  | Address        |
 |----------------------------|----------------|
+| Upstream Router (mgmt)     | 192.168.100.13/24 (static) |
 | Upstream Router (internal) | fd00:100::1/64 |
-| AS Number                  | 64513          |
+| Cluster AS                 | 64512          |
+| Upstream AS                | 64513          |
 
-### 5.3 Implementation Steps
+### 5.4 Implementation Steps
 
-#### Step 5.3.1: Option A - Dedicated VM
+#### Step 5.4.1: Option A - Dedicated VM
 
 Create a minimal VM (Alpine Linux or similar) with FRR:
 
@@ -460,17 +502,20 @@ qemu-system-aarch64 \
   -m 512M \
   -bios "${FIRMWARE}" \
   -drive file=upstream-router.qcow2,if=virtio,format=qcow2 \
+  -drive file=upstream-router-seed.iso,if=virtio,format=raw \
+  -netdev user,id=mgmt,net=192.168.100.0/24,hostfwd=tcp::2200-192.168.100.13:22 \
+  -device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:00 \
   -netdev socket,id=internal,mcast=230.0.0.1:1234 \
   -device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:00 \
   -nographic
 ```
 
-#### Step 5.3.2: Option B - Host-based FRR (via Nix)
+#### Step 5.4.2: Option B - Host-based FRR (via Nix)
 
 Add FRR to your Nix flake and run on host with a tap interface connected to the
 internal network. This requires additional network bridge setup on macOS.
 
-#### Step 5.3.3: Upstream Router FRR Configuration
+#### Step 5.4.3: Upstream Router FRR Configuration
 
 ```
 frr version 9.1
@@ -508,11 +553,12 @@ ipv6 route ::/0 Null0
 !
 ```
 
-#### Step 5.3.4: Verification Checklist
+#### Step 5.4.4: Verification Checklist
 
 - [ ] Upstream router reachable from cluster nodes (`ping6 fd00:100::1`)
 - [ ] eBGP session established with Route Reflector
 - [ ] Default route advertised and received by nodes
+- [ ] No Kubernetes components installed on `upstream-router`
 
 ---
 
@@ -685,7 +731,10 @@ sudo vtysh -c "show ip route"
 
 ## 7. Phase 6: Kubernetes Prerequisites
 
-### 7.1 Implementation Steps (All Nodes)
+### 7.1 Implementation Steps (Kubernetes Nodes Only)
+
+Apply this phase only to `control-plane-1`, `worker-1`, and `worker-2`.
+`upstream-router` remains outside Kubernetes lifecycle management.
 
 #### Step 7.1.1: Add Kubernetes Repository
 
@@ -1067,6 +1116,7 @@ k8s_lab_v2.0/
 │       └── network-config
 ├── configs/
 │   ├── frr/
+│   │   ├── upstream-router.conf
 │   │   ├── control-plane-1.conf
 │   │   ├── worker-1.conf
 │   │   └── worker-2.conf

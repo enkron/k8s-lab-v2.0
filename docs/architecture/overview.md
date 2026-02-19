@@ -107,8 +107,15 @@ is not a Kubernetes node — it runs no kubelet or container runtime.
 
 **Addressing:**
 
-- Management NIC: IPv4 via DHCP (192.168.100.x).
+- Management NIC: static IPv4 192.168.100.13/24.
 - Internal NIC: static IPv6 fd00:100::1/64.
+
+Management addressing for all nodes is deterministic in the current lab runtime:
+
+- `control-plane-1`: 192.168.100.10 (static)
+- `worker-1`: 192.168.100.11 (static)
+- `worker-2`: 192.168.100.12 (static)
+- `upstream-router`: 192.168.100.13 (static)
 
 This node is intentionally lightweight (1 vCPU, 512MB RAM) because it handles
 only control-plane BGP sessions and forwards no data-plane traffic in the
