@@ -207,12 +207,13 @@ CNI.
 - Kubernetes cluster: AS 64512 (private ASN)
 - Upstream routers: AS 64513 (private ASN)
 
-This represents typical production separation between infrastructure and edge routing.
+This represents typical production separation between infrastructure and edge
+routing.
 
 ### 11.2 eBGP with Route Reflectors
 
-Default topology uses eBGP between nodes and upstream routers, with Route Reflectors
-for scalability:
+Default topology uses eBGP between nodes and upstream routers, with Route
+Reflectors for scalability:
 
 - Upstream routers peer with Route Reflectors via eBGP
 - Kubernetes nodes peer with Route Reflectors via iBGP
