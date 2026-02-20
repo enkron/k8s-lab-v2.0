@@ -64,6 +64,7 @@ UEFI firmware: QEMU bundles EDK2 (OSS implementation of UEFI) firmware at
 Debian 12 (Bookworm)
 
 Rationale:
+
 - Linux kernel >= 6.1 with full eBPF support
 - cgroup v2 unified hierarchy enabled by default
 - systemd-networkd for predictable network configuration
@@ -83,7 +84,8 @@ cgroup v2 verification:
 stat -fc %T /sys/fs/cgroup
 ```
 
-If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel cmdline.
+If cgroup v1 is detected, add `systemd.unified_cgroup_hierarchy=1` to kernel
+cmdline.
 
 ---
 
@@ -174,6 +176,7 @@ final_message: "cloud-init completed for control-plane-1 ($UPTIME s)"
 ```
 
 Configuration details:
+
 - **users**: Only `k8s` user is created (replaces the default `debian` user).
   Password login disabled; SSH key-only access.
 - **growpart/resize_rootfs**: Expands the root partition to fill the 20GB disk
@@ -207,6 +210,7 @@ ethernets:
 ```
 
 Network config details:
+
 - NICs matched by MAC address for deterministic interface binding regardless of
   the kernel's predictable naming (enp0sX).
 - Management IPv4 addresses are deterministic:
@@ -236,7 +240,8 @@ make cloud-init
 
 #### Step 2.2.3: Create Virtual Networks
 
-**Network 1: Management (NAT)**
+##### Network 1: Management (NAT)
+
 - QEMU user-mode networking with port forwarding
 - Deterministic addressing on `192.168.100.0/24`:
   - `control-plane-1`: `192.168.100.10` (static in cloud-init)
@@ -245,7 +250,8 @@ make cloud-init
   - `upstream-router`: `192.168.100.13` (static in cloud-init)
 - SSH access via host ports (e.g., 2200, 2201, 2202, 2203)
 
-**Network 2: Internal (L3 Routed)**
+##### Network 2: Internal (L3 Routed)
+
 - QEMU socket or multicast networking for inter-VM communication
 - No host NAT; pure L2 segment for nodes
 
@@ -422,13 +428,16 @@ Gateway=fd00:100::12
 ```
 
 Use the same pattern on `upstream-router`, with:
+
 - `Address=fd00:100::1/64`
 - `IPv6AcceptRA=no`
 - no kubelet/node-level settings
 
-**Critical**: Set `IPv6AcceptRA=no` to disable SLAAC per architecture requirements.
+**Critical**: Set `IPv6AcceptRA=no` to disable SLAAC per architecture
+requirements.
 
 **Why no SLAAC?**
+
 - Kubernetes requires stable node IPs; K8s does not handle IP changes at runtime
 - Static addressing is the data center standard for infrastructure servers
 - Deterministic addresses enable predictable BGP peering and debugging
@@ -446,6 +455,7 @@ sudo networkctl status eth1
 - [ ] Each node has correct IPv6 address on internal NIC
 - [ ] No SLAAC addresses present (only static fd00:100::XX)
 - [ ] Nodes can ping each other via IPv6:
+
   ```bash
   ping6 -c 3 fd00:100::11  # From control-plane-1 to worker-1
   ```
@@ -455,6 +465,7 @@ sudo networkctl status eth1
 ## 5. Phase 4: Upstream Router Setup
 
 The upstream router simulates edge/ToR infrastructure and provides:
+
 - Default route advertisement to cluster nodes
 - eBGP peering point for Route Reflectors
 - North-south connectivity simulation
@@ -464,7 +475,8 @@ The upstream router simulates edge/ToR infrastructure and provides:
 - Boundary node between cluster AS `64512` and upstream AS `64513`.
 - Not a Kubernetes node: no kubelet, kubeadm, kube-proxy, or CNI agent.
 - Runs FRRouting (FRR) only, advertising `0.0.0.0/0` and `::/0` to the cluster.
-- Receives Pod/Service routes from AS `64512` for north-south reachability tests.
+- Receives Pod/Service routes from AS `64512` for north-south reachability
+  tests.
 
 ### 5.2 Upstream Router Options
 
@@ -517,7 +529,7 @@ internal network. This requires additional network bridge setup on macOS.
 
 #### Step 5.4.3: Upstream Router FRR Configuration
 
-```
+```text
 frr version 9.1
 frr defaults traditional
 hostname upstream-router
@@ -567,6 +579,7 @@ ipv6 route ::/0 Null0
 ### 5.1 Tool Selection: FRRouting (FRR)
 
 **Rationale**:
+
 - Production-grade BGP implementation
 - Native IPv6 support
 - Integrates well with Cilium
@@ -609,9 +622,10 @@ sudo systemctl restart frr
 
 #### Step 5.3.3: Configure BGP with Route Reflectors
 
-The topology uses eBGP at the edge (upstream routers) and iBGP internally with Route Reflectors:
+The topology uses eBGP at the edge (upstream routers) and iBGP internally with
+Route Reflectors:
 
-```
+```text
               [Upstream Router]     (AS 64513, runs on host or separate VM)
                      |
                 eBGP peering
@@ -627,7 +641,7 @@ The topology uses eBGP at the edge (upstream routers) and iBGP internally with R
 
 **Route Reflector configuration (control-plane-1)** (`/etc/frr/frr.conf`):
 
-```
+```text
 frr version 9.1
 frr defaults traditional
 hostname control-plane-1
@@ -677,7 +691,7 @@ exit
 
 **Worker node configuration (worker-1)** (`/etc/frr/frr.conf`):
 
-```
+```text
 frr version 9.1
 frr defaults traditional
 hostname worker-1
@@ -722,9 +736,11 @@ sudo vtysh -c "show ip route"
 
 - [ ] BGP sessions established between all nodes
 - [ ] Pod CIDRs visible in routing table on each node:
+
   ```bash
   ip -6 route show | grep fd00:244
   ```
+
 - [ ] Route count matches expected (2 remote pod CIDRs per node)
 
 ---
@@ -828,8 +844,8 @@ cgroupDriver: systemd
 sudo kubeadm init --config kubeadm-config.yaml --skip-phases=addon/kube-proxy
 ```
 
-**Note**: `--skip-phases=addon/kube-proxy` because Cilium will replace kube-proxy
-with eBPF-based implementation.
+**Note**: `--skip-phases=addon/kube-proxy` because Cilium will replace
+kube-proxy with eBPF-based implementation.
 
 #### Step 8.1.3: Configure kubectl Access
 
@@ -870,6 +886,7 @@ sudo kubeadm join [fd00:100::10]:6443 --token <token> \
 ### 9.1 Tool Selection: Cilium
 
 **Rationale**:
+
 - eBPF-native datapath (no iptables)
 - BGP peering support (CiliumBGP)
 - Full IPv6 and dual-stack support
@@ -945,18 +962,25 @@ kubectl apply -f cilium-bgp-peering.yaml
 #### Step 9.2.4: Verification Checklist
 
 - [ ] Cilium pods running on all nodes:
+
   ```bash
   kubectl -n kube-system get pods -l k8s-app=cilium
   ```
+
 - [ ] Cilium status healthy:
+
   ```bash
   cilium status
   ```
+
 - [ ] eBPF programs loaded:
+
   ```bash
   cilium bpf endpoint list
   ```
+
 - [ ] All nodes Ready:
+
   ```bash
   kubectl get nodes
   ```
@@ -1095,7 +1119,7 @@ sudo tcpdump -i eth1 -n icmp6
 
 ### 11.3 File Structure Recommendation
 
-```
+```text
 k8s_lab_v2.0/
 ├── cloud-init/
 │   ├── control-plane-1/

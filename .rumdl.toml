@@ -1,0 +1,35 @@
+[global]
+exclude = [
+    ".git",
+    ".jj",
+    "cloud-init",
+    "disks",
+    "images",
+    "Makefile",
+]
+
+# Respect .gitignore files when scanning directories
+respect-gitignore = true
+
+# Markdown flavor/dialect
+# Options: standard, gfm, commonmark, mkdocs, mdx, quarto
+flavor = "standard"
+
+# Rule-specific configurations
+[MD033]
+allowed-elements = ["br"]
+
+# Require a blank line between the list item and any following unindented text
+#
+# ```
+# 1. List item
+#    Some text that continues the list item.
+# ```
+[MD032]
+allow-lazy-continuation = false
+
+[MD013]
+code-blocks = false
+line-length = 80
+reflow = true
+reflow-mode = "default"
