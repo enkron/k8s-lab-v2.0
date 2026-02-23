@@ -6,8 +6,8 @@ and eBPF-based CNI.
 
 **Goal**: Manual implementation for learning Kubernetes internals and modern
 networking principles.<br>
-Of course, this document's written with LLM help, but the ideas and the
-implementation are totally manual.
+Of course, this document's written with LLM help, but the idea and the
+implementation are manual.
 
 ---
 
@@ -93,12 +93,12 @@ cmdline.
 
 ### 2.1 VM Specifications
 
-| Node            | vCPU | RAM | Disk | NICs |
-|-----------------|------|-----|------|------|
-| upstream-router | 1    | 512MB | 20GB | 2  |
-| control-plane-1 | 2    | 4GB | 20GB | 2    |
-| worker-1        | 2    | 4GB | 20GB | 2    |
-| worker-2        | 2    | 4GB | 20GB | 2    |
+| Node            | vCPU | RAM   | Disk | NICs |
+|-----------------|------|-------|------|------|
+| upstream-router | 1    | 512MB | 20GB | 2    |
+| control-plane-1 | 2    | 4GB   | 20GB | 2    |
+| worker-1        | 2    | 4GB   | 20GB | 2    |
+| worker-2        | 2    | 4GB   | 20GB | 2    |
 
 The lab runs **4 VMs total**: 1 upstream router + 1 control plane + 2 workers.
 The upstream router is infrastructure-only (no kubelet/container runtime).
@@ -223,7 +223,7 @@ Network config details:
 - `optional: true` prevents cloud-init from blocking boot while waiting for the
   internal NIC to be fully configured.
 
-MAC address mapping (from Makefile QEMU definitions):
+MAC address mapping:
 
 | Node            | Management MAC      | Internal MAC        |
 |-----------------|---------------------|---------------------|
