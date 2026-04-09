@@ -24,10 +24,38 @@ Two base images instead of one:
 | `debian-12-generic-arm64.qcow2` | cloud.debian.org (existing) | upstream-router |
 | `talos-arm64-nocloud.qcow2` | GitHub releases → `qemu-img convert` | control-plane-1, worker-1, worker-2 |
 
-The `nocloud-arm64` variant is chosen because it reads machine config from a
-CIDATA ISO at boot — matching the existing `mkisofs` seed ISO pattern.
+### Why the `nocloud` variant
 
-Download + convert flow:
+Talos publishes two image variants for bare-metal/QEMU:
+
+- **`metal-arm64`**: Boots into maintenance mode. Requires a separate
+  `talosctl apply-config --insecure` call over the network to push the machine
+  config after the VM is already running.
+- **`nocloud-arm64`**: At boot, Talos's init system (`machined`) looks for a
+  volume labeled `cidata` and reads a file named `user-data` from it as the
+  machine config. This is the same *physical delivery mechanism* (CIDATA ISO
+  attached as a QEMU drive) that the current Debian setup uses for cloud-init.
+
+The `nocloud` variant is chosen because it keeps the QEMU launch flow
+self-contained: the VM receives its full configuration at first boot from the
+attached ISO, with no post-boot network interaction required.
+
+**Important distinction**: Talos does **not** run cloud-init. The `cloud-init`
+agent is a Debian/Ubuntu software daemon that interprets `#cloud-config` YAML
+and performs imperative actions (create users, install packages, run commands).
+Talos has its own init system that interprets a completely different config
+format (`version: v1alpha1` machine config). What they share is only the
+*transport*: both read from a CIDATA-labeled ISO volume. The content and the
+processing engine are entirely different:
+
+| | Debian (current) | Talos (new) |
+|---|---|---|
+| Transport | CIDATA ISO via `mkisofs` | CIDATA ISO via `mkisofs` (same) |
+| Content of `user-data` | `#cloud-config` YAML | Talos machine config YAML |
+| Processing engine | `cloud-init` daemon | `machined` (Talos init) |
+| Model | Imperative (run commands) | Declarative (desired OS state) |
+
+### Download and convert flow
 
 ```bash
 curl -L -o images/nocloud-arm64.raw.xz \
@@ -43,7 +71,13 @@ Per-node CoW disks become OS-aware:
 
 ---
 
-## 2. Talos Machine Config (replaces cloud-init for k8s nodes)
+## 2. Talos Machine Config
+
+Talos machine config is a single YAML document that declares the entire node
+state: networking, kernel modules, Kubernetes settings, certificates, and
+cluster membership. It replaces both the cloud-init config format (user-data,
+meta-data, network-config) and the manual post-boot phases (2, 3, 5, 6, 7)
+that are currently performed over SSH.
 
 ### Directory structure
 
@@ -164,54 +198,283 @@ upstream-router.
 
 ---
 
-## 4. BGP Architecture Change: eBGP Fan-Out with Cilium BGP
+## 4. BGP Architecture: iBGP + Route Reflector (preserved)
 
 ### Problem
 
-FRR cannot run as a native daemon on Talos (no package manager, immutable FS).
-Running it as a Talos extension service requires building a custom image via
-Image Factory. Running it as a privileged DaemonSet adds complexity.
+FRR cannot run as a native system daemon on Talos (no package manager, immutable
+FS). The current design has FRR on every k8s node, with control-plane-1 as a
+Route Reflector and workers as iBGP clients.
 
-### Solution
+### Solution: FRR as a privileged pod on control-plane-1
 
-Replace all node-side FRR with **Cilium's built-in BGP control plane**
-(GoBGP-based). Cilium is already required for CNI, so this adds zero new
-components.
+Run FRR as a Kubernetes pod with `hostNetwork: true` on control-plane-1. This
+preserves the **iBGP + Route Reflector topology** exactly as designed in
+`bgp-topology.md` section 6.1. Only the runtime changes: FRR moves from a
+system daemon to a containerized workload with host networking.
 
-The topology shifts from **iBGP + Route Reflector** (current section 6.1 of
-`bgp-topology.md`) to **eBGP Full Fan-Out** (current section 6.2). The
-architecture doc already describes this model and notes it's "appropriate for
-very small deployments (< 5 nodes)" — which is exactly this lab.
+This is production-common. FRR in containers is how Cumulus/NVIDIA networking
+and many bare-metal k8s deployments run network daemons. Worker nodes use
+Cilium's built-in BGP control plane (GoBGP-based) as iBGP clients, peering
+with the FRR Route Reflector.
 
-### New topology
+### Topology (unchanged from current design)
 
 ```text
-        [Upstream Router]           (AS 64513, Debian + FRR)
-          /     |      \
-     eBGP    eBGP     eBGP
-        /       |        \
-[cp-1/Cilium] [w-1/Cilium] [w-2/Cilium]   (AS 64512, Cilium BGP)
+        [Upstream Router]           (AS 64513, Debian + FRR system daemon)
+               |
+          eBGP peering
+               |
+     [control-plane-1]             (AS 64512)
+       FRR pod (RR, hostNetwork)
+       + Cilium BGP
+               |
+         iBGP client sessions
+           /        \
+    [worker-1]    [worker-2]       (AS 64512, Cilium iBGP clients)
 ```
 
-Each Cilium node independently:
+- **Upstream-router** (Debian + FRR): eBGP peer to Route Reflector on
+  control-plane-1. Unchanged from current design.
+- **control-plane-1** (Talos): FRR runs as a privileged pod with
+  `hostNetwork: true`. Acts as Route Reflector in AS 64512. Peers with
+  upstream-router via eBGP and with workers via iBGP.
+- **worker-1, worker-2** (Talos): Cilium BGP acts as iBGP client
+  (localASN=64512, peerASN=64512), peering with control-plane-1's FRR pod.
+  Advertises pod CIDRs.
 
-- Announces its Pod CIDR to upstream-router
-- Receives default route from upstream-router
-- Receives other nodes' Pod CIDRs (upstream re-advertises)
+### Bootstrap ordering (chicken-and-egg)
 
-### Upstream-router FRR config update
+FRR pod uses `hostNetwork: true`, so it does **not** depend on CNI being ready.
+The sequencing is:
 
-Peers with all 3 nodes directly (instead of only the Route Reflector):
+1. Talos boots all nodes, Kubernetes API comes up
+2. Cilium is installed (nodes become Ready)
+3. FRR pod is deployed with `hostNetwork: true` (no CNI dependency)
+4. Cilium BGP CRDs are applied (workers establish iBGP sessions to FRR)
+5. FRR on control-plane-1 reflects routes between workers and upstream
+
+If FRR needs to be available before Cilium (e.g., for default route), it can be
+deployed as a static pod via Talos `machine.pods` (evaluated before kubelet
+joins the cluster). See the Static Pod section below.
+
+### Upstream-router FRR config
+
+Unchanged from the current design. Peers only with the Route Reflector on
+control-plane-1:
 
 ```text
 router bgp 64513
- neighbor fd00:100::10 remote-as 64512   # control-plane-1
- neighbor fd00:100::11 remote-as 64512   # worker-1
- neighbor fd00:100::12 remote-as 64512   # worker-2
- # ... address-family config with default-originate for each
+ bgp router-id 10.0.0.1
+ no bgp ebgp-requires-policy
+ !
+ neighbor fd00:100::10 remote-as 64512
+ neighbor fd00:100::10 description rr-control-plane-1
+ !
+ address-family ipv4 unicast
+  network 0.0.0.0/0
+  neighbor fd00:100::10 activate
+  neighbor fd00:100::10 default-originate
+ exit-address-family
+ !
+ address-family ipv6 unicast
+  network ::/0
+  neighbor fd00:100::10 activate
+  neighbor fd00:100::10 default-originate
+ exit-address-family
+exit
+!
+ip route 0.0.0.0/0 Null0
+ipv6 route ::/0 Null0
 ```
 
-### Cilium BGP configuration
+### FRR Route Reflector pod on control-plane-1
+
+**`manifests/frr-route-reflector.yaml`** (DaemonSet pinned to control-plane):
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: frr-route-reflector
+  namespace: kube-system
+  labels:
+    app: frr-rr
+spec:
+  selector:
+    matchLabels:
+      app: frr-rr
+  template:
+    metadata:
+      labels:
+        app: frr-rr
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: frr
+          image: quay.io/frrouting/frr:10.3.1
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+                - SYS_ADMIN
+            privileged: false
+          volumeMounts:
+            - name: frr-config
+              mountPath: /etc/frr
+          ports:
+            - containerPort: 179
+              hostPort: 179
+              protocol: TCP
+              name: bgp
+      volumes:
+        - name: frr-config
+          configMap:
+            name: frr-rr-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frr-rr-config
+  namespace: kube-system
+data:
+  daemons: |
+    bgpd=yes
+    ospfd=no
+    ospf6d=no
+    ripd=no
+    ripngd=no
+    isisd=no
+    pimd=no
+    ldpd=no
+    nhrpd=no
+    eigrpd=no
+    babeld=no
+    sharpd=no
+    staticd=no
+    pbrd=no
+    bfdd=no
+    fabricd=no
+    vrrpd=no
+  frr.conf: |
+    frr version 10.3
+    frr defaults traditional
+    hostname control-plane-1
+    log syslog informational
+    service integrated-vtysh-config
+    !
+    router bgp 64512
+     bgp router-id 10.0.0.10
+     bgp cluster-id 10.0.0.10
+     no bgp ebgp-requires-policy
+     bgp bestpath as-path multipath-relax
+     !
+     ! eBGP peer to upstream router
+     neighbor fd00:100::1 remote-as 64513
+     neighbor fd00:100::1 description upstream-router
+     !
+     ! iBGP clients (route reflector clients)
+     neighbor fd00:100::11 remote-as 64512
+     neighbor fd00:100::11 description worker-1
+     neighbor fd00:100::12 remote-as 64512
+     neighbor fd00:100::12 description worker-2
+     !
+     address-family ipv4 unicast
+      network 10.244.0.0/24
+      neighbor fd00:100::1 activate
+      neighbor fd00:100::11 activate
+      neighbor fd00:100::11 route-reflector-client
+      neighbor fd00:100::11 next-hop-self
+      neighbor fd00:100::12 activate
+      neighbor fd00:100::12 route-reflector-client
+      neighbor fd00:100::12 next-hop-self
+     exit-address-family
+     !
+     address-family ipv6 unicast
+      network fd00:244:0::/64
+      neighbor fd00:100::1 activate
+      neighbor fd00:100::11 activate
+      neighbor fd00:100::11 route-reflector-client
+      neighbor fd00:100::11 next-hop-self
+      neighbor fd00:100::12 activate
+      neighbor fd00:100::12 route-reflector-client
+      neighbor fd00:100::12 next-hop-self
+     exit-address-family
+    exit
+    !
+  vtysh.conf: |
+    service integrated-vtysh-config
+```
+
+### Alternative: FRR as a Talos static pod (earlier availability)
+
+If FRR must be available before the Kubernetes scheduler (e.g., to provide
+default routes during cluster bootstrap), embed it in the Talos machine config
+for control-plane-1 via `machine.pods`. Static pods are managed by kubelet
+directly, without the API server:
+
+```yaml
+# In talos/patches/control-plane-1.yaml
+machine:
+  pods:
+    - apiVersion: v1
+      kind: Pod
+      metadata:
+        name: frr-route-reflector
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+          - name: frr
+            image: quay.io/frrouting/frr:10.3.1
+            securityContext:
+              capabilities:
+                add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+            volumeMounts:
+              - name: frr-config
+                mountPath: /etc/frr
+        volumes:
+          - name: frr-config
+            hostPath:
+              path: /var/etc/frr
+              type: DirectoryOrCreate
+```
+
+With the static pod approach, the FRR config would need to be written to the
+node filesystem via Talos `machine.files`:
+
+```yaml
+# In talos/patches/control-plane-1.yaml
+machine:
+  files:
+    - content: |
+        bgpd=yes
+      path: /var/etc/frr/daemons
+      permissions: 0644
+    - content: |
+        frr version 10.3
+        ... (full frr.conf as above)
+      path: /var/etc/frr/frr.conf
+      permissions: 0644
+    - content: |
+        service integrated-vtysh-config
+      path: /var/etc/frr/vtysh.conf
+      permissions: 0644
+```
+
+The DaemonSet approach is recommended for the initial implementation (simpler
+lifecycle management, ConfigMap-based config). The static pod approach is
+documented here as a fallback if bootstrap ordering proves problematic.
+
+### Cilium BGP configuration (workers as iBGP clients)
 
 **`manifests/cilium-values.yaml`** (Helm):
 
@@ -237,7 +500,7 @@ hubble:
     enabled: true
 ```
 
-**`manifests/cilium-bgp.yaml`** (CRDs):
+**`manifests/cilium-bgp.yaml`** (CRDs for iBGP peering with the RR):
 
 ```yaml
 apiVersion: cilium.io/v2alpha1
@@ -245,26 +508,32 @@ kind: CiliumBGPClusterConfig
 metadata:
   name: bgp-cluster
 spec:
+  nodeSelector:
+    matchLabels:
+      bgp-policy: worker
   bgpInstances:
-    - name: rack-bgp
+    - name: worker-bgp
       localASN: 64512
       peers:
-        - name: upstream-router
-          peerASN: 64513
-          peerAddress: fd00:100::1
+        - name: route-reflector
+          peerASN: 64512
+          peerAddress: fd00:100::10
           peerConfigRef:
-            name: upstream-peer
+            name: rr-peer
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumBGPPeerConfig
 metadata:
-  name: upstream-peer
+  name: rr-peer
 spec:
   families:
     - afi: ipv4
       safi: unicast
     - afi: ipv6
       safi: unicast
+  gracefulRestart:
+    enabled: true
+    restartTimeSeconds: 120
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumBGPAdvertisement
@@ -275,15 +544,30 @@ spec:
     - advertisementType: PodCIDR
 ```
 
-### Tradeoff
+Key difference from the earlier fan-out design:
+- `localASN` and `peerASN` are both **64512** (iBGP, not eBGP)
+- `peerAddress` points to **control-plane-1** (the RR), not the upstream router
+- `nodeSelector` targets **worker nodes only** (`bgp-policy: worker`);
+  control-plane-1's BGP is handled by its FRR pod, not Cilium
 
-| | Cilium BGP (recommended) | FRR on Talos (alternative) |
-|---|---|---|
-| Components | Cilium only | Cilium + FRR extension/DaemonSet |
-| Image | Standard Talos | Custom Image Factory build |
-| Topology | eBGP fan-out | iBGP + RR (current) |
-| Debugging | `cilium bgp peers/routes` | `vtysh` in privileged pod |
-| Principle fit | Minimal abstraction | More moving parts |
+Worker node labels (in Talos patches):
+
+```yaml
+# talos/patches/worker-1.yaml and worker-2.yaml
+machine:
+  nodeLabels:
+    bgp-policy: worker
+```
+
+### Debugging BGP in the new setup
+
+| Task | Command |
+|---|---|
+| FRR RR status | `kubectl -n kube-system exec -it ds/frr-route-reflector -- vtysh -c "show bgp summary"` |
+| FRR RR routes | `kubectl -n kube-system exec -it ds/frr-route-reflector -- vtysh -c "show bgp ipv6 unicast"` |
+| Cilium worker peers | `cilium bgp peers` |
+| Cilium worker routes | `cilium bgp routes` |
+| Upstream FRR | `make ssh-upstream` then `sudo vtysh -c "show bgp summary"` |
 
 ---
 
@@ -294,19 +578,20 @@ spec:
 | 1: Infrastructure Provisioning | Debian qcow2 + cloud-init | Dual images + Talos machine configs | **Modified** |
 | 2: Base OS Configuration | SSH: swap, modules, containerd | Talos handles all natively | **Eliminated** |
 | 3: Network Configuration | SSH: systemd-networkd static IPv6 | In machine config from boot | **Eliminated** |
-| 4: Upstream Router Setup | FRR on Debian | Same, but config updated for 3-peer eBGP | **Modified** |
-| 5: BGP with FRRouting | FRR on all k8s nodes | Replaced by Cilium BGP (Phase 8) | **Eliminated** |
+| 4: Upstream Router Setup | FRR on Debian | Unchanged (peers with RR on cp-1) | **Unchanged** |
+| 5: BGP with FRRouting | FRR system daemon on all k8s nodes | FRR pod (RR) on cp-1 + Cilium iBGP on workers | **Modified** |
 | 6: K8s Prerequisites | apt: kubeadm, kubelet, kubectl | Built into Talos | **Eliminated** |
 | 7: K8s Bootstrap | `kubeadm init/join` | `talosctl bootstrap` | **Replaced** |
-| 8: CNI (Cilium) | Helm install | Same + Talos-specific values + BGP CRDs | **Modified** |
-| 9: Validation | SSH-based checks | `talosctl` + `cilium` CLI | **Modified** |
+| 8: CNI (Cilium) | Helm install | Same + Talos-specific values + iBGP CRDs | **Modified** |
+| 9: Validation | SSH-based checks | `talosctl` + `cilium` CLI + `kubectl exec vtysh` | **Modified** |
 
-**9 phases collapse to 4 operational steps:**
+**9 phases collapse to 5 operational steps:**
 
 1. Provision (images, disks, configs, boot)
 2. Bootstrap (`talosctl bootstrap`, retrieve kubeconfig)
-3. Install Cilium + apply BGP CRDs
-4. Validate
+3. Install Cilium (CNI)
+4. Deploy FRR Route Reflector pod + apply Cilium iBGP CRDs
+5. Validate
 
 ---
 
@@ -339,6 +624,7 @@ TALOSCONFIG := talos/generated/talosconfig
 | `bootstrap` | **New**: `talosctl bootstrap` |
 | `kubeconfig` | **New**: `talosctl kubeconfig` |
 | `cilium-install` | **New**: `helm install cilium` |
+| `frr-rr` | **New**: `kubectl apply -f manifests/frr-route-reflector.yaml` |
 | `cilium-bgp` | **New**: `kubectl apply -f manifests/cilium-bgp.yaml` |
 | `talos-dashboard` | **New**: `talosctl dashboard` |
 | `talos-health` | **New**: `talosctl health` |
@@ -369,7 +655,8 @@ make bootstrap        # ~2-3 min
 make kubeconfig
 make cilium-install
 # Wait for Cilium ready
-make cilium-bgp
+make frr-rr           # deploy FRR Route Reflector pod
+make cilium-bgp       # configure worker iBGP peering
 make talos-health     # verify
 ```
 
@@ -380,7 +667,8 @@ make talos-health     # verify
 | Logs | SSH + `journalctl` | `talosctl -n <ip> logs <service>` |
 | Network debug | SSH + `ip addr/route` | `talosctl -n <ip> get addresses/routes` |
 | Packet capture | SSH + `tcpdump` | `talosctl -n <ip> pcap` |
-| BGP status | SSH + `vtysh` | `cilium bgp peers` / `cilium bgp routes` |
+| BGP status (RR) | SSH + `vtysh` | `kubectl exec ds/frr-route-reflector -- vtysh` |
+| BGP status (workers) | SSH + `vtysh` | `cilium bgp peers` / `cilium bgp routes` |
 | Reboot | SSH + `sudo reboot` | `talosctl -n <ip> reboot` |
 | Dashboard | N/A | `make talos-dashboard` |
 | Serial console | `make console-<node>` | Same |
@@ -410,6 +698,7 @@ k8s_lab/
 +-- manifests/                        # NEW
 |   +-- cilium-values.yaml
 |   +-- cilium-bgp.yaml
+|   +-- frr-route-reflector.yaml
 +-- docs/
 |   +-- implementation-plan.md        # Major rewrite
 |   +-- talos-migration-plan.md       # This document
@@ -450,8 +739,8 @@ Add to Nix flakes (implementation-plan.md section 1.2):
 | File | Changes |
 |---|---|
 | `docs/implementation-plan.md` | Major rewrite: update prereqs, Phase 1 for dual images + Talos configs, eliminate Phases 2/3/5/6, replace Phase 7 with talosctl, update Phase 4/8/9 |
-| `docs/architecture/overview.md` | Section 7: Talos replaces kubeadm. Section 6.2: note Talos for k8s nodes, Debian for router. Section 11: eBGP fan-out replaces iBGP+RR |
-| `docs/architecture/bgp-topology.md` | Section 6.1 default model becomes eBGP fan-out. Section 5.3 RR role: note removal rationale. Update diagrams |
+| `docs/architecture/overview.md` | Section 7: Talos replaces kubeadm. Section 6.2: note Talos for k8s nodes, Debian for router. BGP section: note FRR runs as pod on cp-1 |
+| `docs/architecture/bgp-topology.md` | Section 5.2: note FRR runs as privileged pod (not system daemon) on Talos nodes. Section 6.1 default model stays iBGP+RR. Update implementation notes |
 | `.gitignore` | Add `talos/generated/` |
 | `TODO.md` | Update for new architecture |
 
@@ -475,19 +764,43 @@ talosctl -n 192.168.100.12 get addresses
 make bootstrap && make kubeconfig
 kubectl get nodes                                 # 3 nodes (NotReady)
 
-# 4. Cilium + BGP
+# 4. Cilium (CNI)
 make cilium-install
 kubectl -n kube-system rollout status ds/cilium
 kubectl get nodes                                 # 3 nodes (Ready)
+
+# 5. FRR Route Reflector
+make frr-rr
+kubectl -n kube-system rollout status ds/frr-route-reflector
+
+# Verify FRR pod is running with host networking
+kubectl -n kube-system get pods -l app=frr-rr -o wide
+# Should show pod on control-plane-1 with node IP
+
+# Verify FRR BGP sessions
+kubectl -n kube-system exec -it ds/frr-route-reflector -- \
+  vtysh -c "show bgp summary"
+# Should show eBGP session to upstream-router (fd00:100::1) as Established
+
+# 6. Cilium iBGP on workers
 make cilium-bgp
 
-# 5. BGP verification
-cilium bgp peers                                  # 3 sessions Established
+# Verify Cilium iBGP sessions on workers
+cilium bgp peers
+# Should show iBGP session to fd00:100::10 (RR) as Established
+
+# 7. Full BGP verification
+# From FRR RR: verify all sessions up and routes received
+kubectl -n kube-system exec -it ds/frr-route-reflector -- \
+  vtysh -c "show bgp ipv6 unicast"
+# Should show pod CIDRs: fd00:244:0::/64, fd00:244:1::/64, fd00:244:2::/64
+
+# From upstream-router: verify eBGP + route propagation
 make ssh-upstream
-sudo vtysh -c "show bgp summary"                 # 3 eBGP peers up
+sudo vtysh -c "show bgp summary"                 # 1 eBGP peer (cp-1) up
 sudo vtysh -c "show bgp ipv6 unicast"            # pod CIDRs visible
 
-# 6. Workload test
+# 8. Workload test
 kubectl create deployment nginx --image=nginx --replicas=3
 kubectl get pods -o wide                          # pods across nodes
 ```
@@ -512,12 +825,26 @@ kubectl get pods -o wide                          # pods across nodes
    `k8sServiceHost=localhost`, `k8sServicePort=7445`. Wrong values mean Cilium
    can't reach API server.
 
+5. **FRR pod bootstrap ordering**: The FRR Route Reflector pod requires the
+   Kubernetes API to be scheduled (DaemonSet approach). If BGP routes are needed
+   before the API is available, switch to the static pod approach via
+   `machine.pods` in the Talos machine config (documented in section 4). With
+   `hostNetwork: true`, the FRR pod itself does not depend on CNI.
+
+6. **FRR pod image pull**: The `quay.io/frrouting/frr:10.3.1` image must be
+   pullable from the node. If the node has no default route yet (because FRR
+   hasn't started), there is a circular dependency. The static pod approach
+   with a pre-pulled image or a local registry solves this. Alternatively, the
+   management NIC's NAT gateway (192.168.100.2) provides internet access
+   independently of BGP routes, so image pull should succeed via the mgmt NIC.
+
 ---
 
 ## 13. Implementation Order
 
 1. Create `talos/patches/` directory + all 6 patch YAML files
-2. Create `manifests/` directory with `cilium-values.yaml` and `cilium-bgp.yaml`
+2. Create `manifests/` directory with `cilium-values.yaml`, `cilium-bgp.yaml`,
+   and `frr-route-reflector.yaml`
 3. Update `.gitignore` (add `talos/generated/`)
 4. Rewrite `Makefile`
 5. Remove `cloud-init/control-plane-1/`, `cloud-init/worker-1/`,
