@@ -1,0 +1,21 @@
+machine:
+  network:
+    hostname: control-plane-1
+    interfaces:
+      - deviceSelector:
+          hardwareAddr: "52:54:00:00:01:01"
+        addresses:
+          - 192.168.100.10/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.100.2
+        dhcp: false
+      - deviceSelector:
+          hardwareAddr: "52:54:00:00:02:01"
+        addresses:
+          - fd00:100::10/64
+        dhcp: false
+    nameservers:
+      - 192.168.100.3
+  nodeLabels:
+    node-role.kubernetes.io/route-reflector: ""

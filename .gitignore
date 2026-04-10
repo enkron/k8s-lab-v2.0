@@ -1,3 +1,4 @@
 images/
 disks/
 cloud-init/*/seed.iso
+talos/generated/

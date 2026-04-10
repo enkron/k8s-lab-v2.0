@@ -1,0 +1,19 @@
+machine:
+  network:
+    hostname: worker-2
+    interfaces:
+      - deviceSelector:
+          hardwareAddr: "52:54:00:00:01:03"
+        addresses:
+          - 192.168.100.12/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.100.2
+        dhcp: false
+      - deviceSelector:
+          hardwareAddr: "52:54:00:00:02:03"
+        addresses:
+          - fd00:100::12/64
+        dhcp: false
+    nameservers:
+      - 192.168.100.3

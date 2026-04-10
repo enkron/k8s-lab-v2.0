@@ -132,10 +132,14 @@ Responsibilities:
 
 Characteristics:
 
-- Typically one BGP daemon per node (`BIRD`, `FRR`)
-- eBGP sessions to upstream routers
+- Worker nodes use Cilium BGP control plane (GoBGP-based) as iBGP clients
+- control-plane-1 runs FRR as a privileged Kubernetes pod with `hostNetwork:
+  true`, acting as Route Reflector (see section 5.3)
+- On Talos Linux, FRR cannot run as a system daemon (immutable OS, no package
+  manager). Running it as a containerized workload with host networking is
+  production-common (Cumulus/NVIDIA, bare-metal deployments)
 
-### 5.3 Route Reflectors (Optional)
+### 5.3 Route Reflectors
 
 Responsibilities:
 
@@ -146,7 +150,9 @@ Characteristics:
 
 - iBGP sessions to clients
 - No data-plane traffic
-- Deployed only when node count justifies complexity
+- In this lab, co-located on control-plane-1 as a FRR pod (DaemonSet with
+  `hostNetwork: true`, pinned via nodeSelector)
+- For production, deploy on dedicated infrastructure or as separate VMs
 
 ## 6. Peering Model
 
@@ -191,8 +197,10 @@ Cons:
 
 Implementation notes:
 
-- Route Reflectors can be co-located on control-plane node or run as separate
-  VMs
+- Route Reflector runs as a FRR pod (DaemonSet, `hostNetwork: true`) on
+  control-plane-1. On Talos Linux, system daemons are not available; the pod
+  approach is production-aligned (containerized FRR)
+- Worker nodes use Cilium BGP control plane as iBGP clients to the FRR RR
 - For small labs, a single RR is acceptable; production requires at least two
 - RRs do not participate in data-plane traffic
 

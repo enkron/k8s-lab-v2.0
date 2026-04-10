@@ -1,0 +1,43 @@
+# Cilium BGP configuration for worker nodes.
+# Workers peer via iBGP (AS 64512) with the FRR Route Reflector on
+# control-plane-1 and advertise their pod CIDRs.
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPClusterConfig
+metadata:
+  name: bgp-cluster
+spec:
+  nodeSelector:
+    matchLabels:
+      bgp-policy: worker
+  bgpInstances:
+    - name: worker-bgp
+      localASN: 64512
+      peers:
+        - name: route-reflector
+          peerASN: 64512
+          peerAddress: fd00:100::10
+          peerConfigRef:
+            name: rr-peer
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPPeerConfig
+metadata:
+  name: rr-peer
+spec:
+  families:
+    - afi: ipv4
+      safi: unicast
+    - afi: ipv6
+      safi: unicast
+  gracefulRestart:
+    enabled: true
+    restartTimeSeconds: 120
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPAdvertisement
+metadata:
+  name: pod-cidrs
+spec:
+  advertisements:
+    - advertisementType: PodCIDR

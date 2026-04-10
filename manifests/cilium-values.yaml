@@ -1,0 +1,50 @@
+ipam:
+  mode: kubernetes
+
+kubeProxyReplacement: true
+
+# Talos KubePrism: local kube-apiserver proxy on every node.
+# Required because kube-proxy is disabled.
+k8sServiceHost: localhost
+k8sServicePort: 7445
+
+ipv4:
+  enabled: true
+ipv6:
+  enabled: true
+
+bpf:
+  masquerade: true
+
+bgpControlPlane:
+  enabled: true
+
+# Talos manages cgroup mounts; Cilium must not attempt to remount.
+cgroup:
+  autoMount:
+    enabled: false
+  hostRoot: /sys/fs/cgroup
+
+securityContext:
+  capabilities:
+    ciliumAgent:
+      - CHOWN
+      - KILL
+      - NET_ADMIN
+      - NET_RAW
+      - IPC_LOCK
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    cleanCiliumState:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+
+hubble:
+  enabled: true
+  relay:
+    enabled: true

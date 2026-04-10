@@ -22,7 +22,7 @@ Two base images instead of one:
 | Image | Source | Used by |
 |---|---|---|
 | `debian-12-generic-arm64.qcow2` | cloud.debian.org (existing) | upstream-router |
-| `talos-arm64-nocloud.qcow2` | GitHub releases → `qemu-img convert` | control-plane-1, worker-1, worker-2 |
+| `talos-arm64-nocloud.qcow2` | Talos Image Factory → `qemu-img convert` | control-plane-1, worker-1, worker-2 |
 
 ### Why the `nocloud` variant
 
@@ -58,9 +58,9 @@ processing engine are entirely different:
 ### Download and convert flow
 
 ```bash
-curl -L -o images/nocloud-arm64.raw.xz \
-  https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/nocloud-arm64.raw.xz
-xz -d images/nocloud-arm64.raw.xz
+curl -L -o images/nocloud-arm64.raw.zst \
+  https://factory.talos.dev/image/${TALOS_SCHEMATIC}/${TALOS_VERSION}/nocloud-arm64.raw.zst
+zstd -d images/nocloud-arm64.raw.zst --output-dir-flat images/
 qemu-img convert -f raw -O qcow2 images/nocloud-arm64.raw images/talos-arm64-nocloud.qcow2
 ```
 
@@ -185,7 +185,8 @@ Both NICs get full static config from boot. No manual Phase 3 step needed.
 
 ### QEMU port forwarding additions
 
-Talos API runs on port 50000. Add forwards for `talosctl` access:
+Talos API runs on port 50000. Port forwards target the static IPs assigned
+by the machine config. The talosconfig endpoint is `127.0.0.1:50000`.
 
 ```text
 control-plane-1: hostfwd=tcp::50000-192.168.100.10:50000
@@ -601,7 +602,8 @@ machine:
 
 ```makefile
 TALOS_VERSION := v1.9.5
-TALOS_IMAGE_URL := https://github.com/siderolabs/talos/releases/download/$(TALOS_VERSION)/nocloud-arm64.raw.xz
+TALOS_SCHEMATIC := 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
+TALOS_IMAGE_URL := https://factory.talos.dev/image/$(TALOS_SCHEMATIC)/$(TALOS_VERSION)/nocloud-arm64.raw.zst
 TALOS_NODES := control-plane-1 worker-1 worker-2
 DEBIAN_NODES := upstream-router
 CLUSTER_NAME := k8s-lab
@@ -620,7 +622,7 @@ TALOSCONFIG := talos/generated/talosconfig
 | `talos-configs` | **New**: per-node patched configs |
 | `talos-seed` | **New**: CIDATA ISOs for Talos nodes |
 | `seed` | **New**: umbrella for talos-seed + cloud-init |
-| `up-*` | Modified: Talos nodes use talos seed ISOs, add port 50000 forward |
+| `up-*` | Modified: Talos nodes use talos seed ISOs, dual hostfwd (DHCP + static) |
 | `bootstrap` | **New**: `talosctl bootstrap` |
 | `kubeconfig` | **New**: `talosctl kubeconfig` |
 | `cilium-install` | **New**: `helm install cilium` |

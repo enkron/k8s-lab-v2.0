@@ -1,0 +1,123 @@
+# FRR Route Reflector on control-plane-1.
+# Runs with hostNetwork so it binds to the node's real interfaces and does not
+# depend on CNI. Peers with upstream-router (eBGP, AS 64513) and worker nodes
+# (iBGP clients, AS 64512) via Cilium BGP.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frr-rr-config
+  namespace: kube-system
+data:
+  daemons: |
+    bgpd=yes
+    ospfd=no
+    ospf6d=no
+    ripd=no
+    ripngd=no
+    isisd=no
+    pimd=no
+    ldpd=no
+    nhrpd=no
+    eigrpd=no
+    babeld=no
+    sharpd=no
+    staticd=no
+    pbrd=no
+    bfdd=no
+    fabricd=no
+    vrrpd=no
+  vtysh.conf: |
+    service integrated-vtysh-config
+  frr.conf: |
+    frr version 10.3
+    frr defaults traditional
+    hostname control-plane-1
+    log syslog informational
+    service integrated-vtysh-config
+    !
+    router bgp 64512
+     bgp router-id 10.0.0.10
+     bgp cluster-id 10.0.0.10
+     no bgp ebgp-requires-policy
+     bgp bestpath as-path multipath-relax
+     !
+     ! eBGP peer to upstream router
+     neighbor fd00:100::1 remote-as 64513
+     neighbor fd00:100::1 description upstream-router
+     !
+     ! iBGP clients (route reflector clients)
+     neighbor fd00:100::11 remote-as 64512
+     neighbor fd00:100::11 description worker-1
+     neighbor fd00:100::12 remote-as 64512
+     neighbor fd00:100::12 description worker-2
+     !
+     address-family ipv4 unicast
+      network 10.244.0.0/24
+      neighbor fd00:100::1 activate
+      neighbor fd00:100::11 activate
+      neighbor fd00:100::11 route-reflector-client
+      neighbor fd00:100::11 next-hop-self
+      neighbor fd00:100::12 activate
+      neighbor fd00:100::12 route-reflector-client
+      neighbor fd00:100::12 next-hop-self
+     exit-address-family
+     !
+     address-family ipv6 unicast
+      network fd00:244:0::/64
+      neighbor fd00:100::1 activate
+      neighbor fd00:100::11 activate
+      neighbor fd00:100::11 route-reflector-client
+      neighbor fd00:100::11 next-hop-self
+      neighbor fd00:100::12 activate
+      neighbor fd00:100::12 route-reflector-client
+      neighbor fd00:100::12 next-hop-self
+     exit-address-family
+    exit
+    !
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: frr-route-reflector
+  namespace: kube-system
+  labels:
+    app: frr-rr
+spec:
+  selector:
+    matchLabels:
+      app: frr-rr
+  template:
+    metadata:
+      labels:
+        app: frr-rr
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: frr
+          image: quay.io/frrouting/frr:10.3.1
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+                - SYS_ADMIN
+          volumeMounts:
+            - name: frr-config
+              mountPath: /etc/frr
+          ports:
+            - containerPort: 179
+              hostPort: 179
+              protocol: TCP
+              name: bgp
+      volumes:
+        - name: frr-config
+          configMap:
+            name: frr-rr-config

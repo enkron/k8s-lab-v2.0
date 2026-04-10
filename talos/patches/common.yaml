@@ -1,0 +1,27 @@
+machine:
+  certSANs:
+    - 127.0.0.1
+    - localhost
+  kernel:
+    modules:
+      - name: br_netfilter
+  sysctls:
+    net.ipv4.ip_forward: "1"
+    net.ipv6.conf.all.forwarding: "1"
+    net.bridge.bridge-nf-call-iptables: "1"
+    net.bridge.bridge-nf-call-ip6tables: "1"
+  time:
+    servers:
+      - time.cloudflare.com
+cluster:
+  network:
+    cni:
+      name: none
+    podSubnets:
+      - 10.244.0.0/16
+      - fd00:244::/48
+    serviceSubnets:
+      - 10.96.0.0/16
+      - fd00:96::/112
+  proxy:
+    disabled: true

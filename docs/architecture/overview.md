@@ -2,12 +2,16 @@
 
 ## 1. At a Glance
 
-- 1 + upstream router + 1 control plane + 2 worker VMs; each node has two NICs
+- 1 upstream router + 1 control plane + 2 worker VMs; each node has two NICs
   (mgmt + internal).
 - QEMU with KVM (Linux) or HVF (macOS).
-- kubeadm bootstraps; `etcd` runs as a static pod.
+- Kubernetes nodes run Talos Linux (immutable, API-driven); upstream router runs
+  Debian 12 with FRR.
+- Talos bootstraps the cluster via `talosctl`; `etcd` runs as a static pod.
 - Explicit L3 routing without hidden overlays.
 - Pod and Service networks are distinct; Pod CIDRs via iBGP (AS 64512).
+- FRR runs as a privileged pod (hostNetwork) on control-plane-1 as Route
+  Reflector; workers use Cilium BGP as iBGP clients.
 - IPv6-first; IPv4 kept only where required.
 
 ## 2. Purpose and Goals
@@ -69,13 +73,16 @@ scripts may wrap QEMU for convenience.
 
 Initial cluster topology:
 
-| Role            | Count | vCPU | RAM   | Description                                         |
-|-----------------|-------|------|-------|-----------------------------------------------------|
-| Upstream Router | 1     | 1    | 512MB | FRR-based edge router; eBGP peer, default gateway   |
-| Control Plane   | 1     | 2    | 2GB   | kube-apiserver, scheduler, controller-manager, etcd |
-| Worker Node     | 2     | 2    | 2GB   | Run workloads and CNI datapath                      |
+| Role            | Count | vCPU | RAM   | OS       | Description                                           |
+|-----------------|-------|------|-------|----------|-------------------------------------------------------|
+| Upstream Router | 1     | 1    | 512MB | Debian 12 | FRR-based edge router; eBGP peer, default gateway    |
+| Control Plane   | 1     | 2    | 4GB   | Talos    | kube-apiserver, scheduler, controller-manager, etcd   |
+| Worker Node     | 2     | 2    | 4GB   | Talos    | Run workloads and CNI datapath                        |
 
-Each node is a full Linux VM.
+Kubernetes nodes run Talos Linux — an immutable, API-driven OS purpose-built
+for Kubernetes. The upstream router runs Debian 12 because it requires FRR as
+a system daemon (Talos cannot run arbitrary daemons outside Kubernetes). Each
+node is a full Linux VM.
 
 ### 6.3 Upstream Router
 
@@ -123,12 +130,15 @@ current design.
 
 ## 7. Kubernetes Bootstrapping Model
 
-- Cluster is initialized using `kubeadm`.
+- Cluster is initialized using `talosctl bootstrap` (Talos Linux).
 - `etcd` runs as a static pod on the control-plane node.
 - No managed Kubernetes distributions are used.
+- All node configuration is declarative via Talos machine configs. No SSH or
+  manual post-boot steps are required for Kubernetes nodes.
 
 This preserves visibility into TLS bootstrap, certificate rotation, component
-manifests, and lifecycle behavior.
+manifests, and lifecycle behavior while providing reproducible, immutable node
+state.
 
 ## 8. Networking Architecture Overview
 
@@ -212,12 +222,15 @@ routing.
 
 ### 11.2 eBGP with Route Reflectors
 
-Default topology uses eBGP between nodes and upstream routers, with Route
-Reflectors for scalability:
+Default topology uses eBGP between the upstream router and the Route Reflector,
+with iBGP between the Route Reflector and worker nodes:
 
-- Upstream routers peer with Route Reflectors via eBGP
-- Kubernetes nodes peer with Route Reflectors via iBGP
-- Route Reflectors reflect routes between nodes without full mesh
+- Upstream router peers with the Route Reflector via eBGP
+- Worker nodes peer with the Route Reflector via iBGP (using Cilium BGP)
+- The Route Reflector reflects routes between workers without full mesh
+- FRR runs as a privileged Kubernetes pod (`hostNetwork: true`) on
+  control-plane-1, acting as the Route Reflector. This is production-common:
+  FRR in containers is used in Cumulus/NVIDIA and bare-metal deployments.
 
 Each node advertises:
 
