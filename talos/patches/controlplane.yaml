@@ -15,7 +15,4 @@ cluster:
     certSANs:
       - 192.168.100.10
       - fd00:100::10
-  etcd:
-    extraArgs:
-      listen-client-urls: https://0.0.0.0:2379
-      advertise-client-urls: https://192.168.100.10:2379
+  etcd: {}
