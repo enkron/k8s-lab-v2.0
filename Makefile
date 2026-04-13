@@ -358,7 +358,7 @@ talos-dashboard:
 # per-VM isolated NAT — the control plane can only reach workers via VDE.
 talos-health:
 	TALOSCONFIG=$(TALOSCONFIG) talosctl health \
-		--control-plane-nodes $(MGMT_CP_IP) \
+		--control-plane-nodes fd00:100::10 \
 		--worker-nodes fd00:100::11,fd00:100::12
 
 # --- Cleanup ---

@@ -1,9 +1,12 @@
 cluster:
   controllerManager:
     extraArgs:
+      # Bind to all interfaces (dual-stack) for metrics scraping.
       bind-address: "::"
       allocate-node-cidrs: "true"
-      cluster-cidr: 10.244.0.0/16,fd00:244::/48
+      # IPv6-first: primary family must match the API server's advertise address
+      # (fd00:100::10, derived from CLUSTER_ENDPOINT).
+      cluster-cidr: fd00:244::/48,10.244.0.0/16
       node-cidr-mask-size-ipv4: "24"
       node-cidr-mask-size-ipv6: "64"
   scheduler:
@@ -12,8 +15,18 @@ cluster:
   apiServer:
     extraArgs:
       bind-address: "::"
+    # SANs for TLS validation from all access paths:
+    #   - 192.168.100.10: SLIRP management NIC (host port forwarding)
+    #   - fd00:100::10: internal VDE network (inter-VM, cluster endpoint)
+    #   - 127.0.0.1: host kubectl via SLIRP hostfwd (tcp::6443 -> :6443)
     certSANs:
       - 192.168.100.10
       - fd00:100::10
       - 127.0.0.1
-  etcd: {}
+  etcd:
+    # By default, etcd advertises on the node's primary IP (192.168.100.10 —
+    # the SLIRP management NIC). That address is per-VM isolated NAT and
+    # unreachable from other VMs. Force etcd to advertise on the internal
+    # VDE network so peer discovery and health checks use routable addresses.
+    advertisedSubnets:
+      - fd00:100::/64

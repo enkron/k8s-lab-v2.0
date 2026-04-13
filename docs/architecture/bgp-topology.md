@@ -63,6 +63,10 @@ adapted for a lab environment:
             [Pods] [Pods] [Pods]
 ```
 
+The lab implements a single-upstream, single-RR variant of this topology.
+The diagram above shows the full production model with dual upstreams and dual
+Route Reflectors for high availability.
+
 - Edge / Upstream Routers (AS 64513)
   - Act as default gateways to external networks
   - Provide north–south connectivity

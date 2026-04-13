@@ -180,8 +180,30 @@ This mirrors production practices where control and data planes are separated.
 | 192.168.100.0/24 | IPv4    | Node   | management (NAT) |
 | fd00:100::/64    | IPv6    | Node   | internal routing |
 
-- Management network uses NAT for host access.
-- Internal network is routed, not bridged.
+- Management network uses QEMU user-mode NAT (SLIRP) with host port forwarding.
+  Each VM gets its own isolated NAT — management IPs are **not** routable
+  between VMs.
+- Internal network uses a VDE (Virtual Distributed Ethernet) switch providing a
+  shared L2 segment. VDE is a userspace virtual switch requiring no root or
+  macOS entitlements. QEMU's built-in multicast socket cannot be used on macOS
+  due to broken `IP_MULTICAST_LOOP` semantics.
+- All cluster-internal traffic (kubelet, etcd, BGP, pods) uses the internal
+  network. Management is only for host-to-VM access (talosctl, kubectl, SSH).
+
+### 9.3 Internal Address Selection
+
+All Kubernetes and Talos components are configured to use internal network
+addresses (`fd00:100::/64`) rather than management SLIRP IPs:
+
+| Component | Config | Effect |
+|-----------|--------|--------|
+| kubelet | `machine.kubelet.nodeIP.validSubnets: [fd00:100::/64]` | Nodes register with IPv6 internal addresses in `kubectl get nodes` |
+| etcd | `cluster.etcd.advertisedSubnets: [fd00:100::/64]` | etcd peers and advertises on the internal network |
+| API server | `CLUSTER_ENDPOINT: https://[fd00:100::10]:6443` | Workers reach the API server over the internal network |
+
+This is necessary because SLIRP management IPs (192.168.100.x) are per-VM
+isolated NAT — they are only reachable from the host via port forwarding, not
+between VMs.
 
 ## 10. Pod Network vs Service Network
 
@@ -258,7 +280,10 @@ Without redesigning the cluster.
 
 ## 12. IPv6 Strategy
 
-- IPv6 is enabled from day one.
+- IPv6 is the primary address family (IPv6-first dual-stack).
+- Pod and Service subnets are ordered IPv6-first: the primary CIDR family must
+  match the API server's advertise address (fd00:100::10, derived from the
+  cluster endpoint).
 - Static addressing is required for node interfaces.
 - SLAAC explicitly disabled (`IPv6AcceptRA=no`).
 
