@@ -5,7 +5,7 @@
 # All VMs use QEMU aarch64 with HVF acceleration on Apple Silicon.
 
 # Actions
-.PHONY: help up down clean nuke status images vms seed cloud-init
+.PHONY: help up down clean nuke status images vms seed cloud-init vde-up
 .PHONY: talos-gen talos-configs talos-seed
 .PHONY: bootstrap kubeconfig cilium-install frr-rr cilium-bgp
 .PHONY: talos-dashboard talos-health
@@ -28,10 +28,17 @@ DEBIAN_NODES := upstream-router
 NODES := $(TALOS_NODES) $(DEBIAN_NODES)
 
 CLUSTER_NAME := k8s-lab
-CLUSTER_ENDPOINT := https://192.168.100.10:6443
+# Workers reach the API server over the internal multicast network (fd00:100::/64),
+# not through SLIRP management IPs (which are isolated per-VM NAT).
+CLUSTER_ENDPOINT := https://[fd00:100::10]:6443
 TALOSCONFIG := talos/generated/talosconfig
 
-MCAST_ADDR := 230.0.0.1:1234
+# VDE (Virtual Distributed Ethernet) switch provides the internal L2 segment.
+# QEMU's built-in multicast socket (-netdev socket,mcast=) is broken on macOS:
+# the kernel ignores IP_MULTICAST_LOOP=0 semantics and drops all local delivery.
+# VDE creates a proper userspace virtual switch — no root, no entitlements.
+VDE_SWITCH := $(shell nix build nixpkgs\#vde2 --print-out-paths --no-link)/bin/vde_switch
+VDE_SOCK := /tmp/vde-k8s-lab.ctl
 MGMT_NET := 192.168.100.0/24
 MGMT_CP_IP := 192.168.100.10
 MGMT_W1_IP := 192.168.100.11
@@ -178,10 +185,19 @@ seed: talos-seed cloud-init
 #
 # Two NICs per VM:
 #   mgmt (user-mode NAT): host SSH/API/talosctl access via port forwarding.
-#   internal (mcast socket): shared L2 segment for inter-VM traffic (BGP, pods).
+#   internal (VDE switch): shared L2 segment for inter-VM traffic (BGP, pods).
 # Stable MAC addresses let Talos/cloud-init bind NICs deterministically.
 
-up: up-upstream up-control-plane-1 up-worker-1 up-worker-2
+# Start VDE virtual switch before any VM. Provides the internal L2 segment.
+vde-up:
+	@if [ ! -S $(VDE_SOCK)/ctl ]; then \
+		echo "Starting VDE switch..."; \
+		$(VDE_SWITCH) -sock $(VDE_SOCK) -daemon -mod 700; \
+	else \
+		echo "VDE switch already running"; \
+	fi
+
+up: vde-up up-upstream up-control-plane-1 up-worker-1 up-worker-2
 
 up-control-plane-1: disks/control-plane-1.qcow2 talos/generated/control-plane-1-seed.iso
 	@echo "Starting control-plane-1 (Talos)..."
@@ -194,7 +210,7 @@ up-control-plane-1: disks/control-plane-1.qcow2 talos/generated/control-plane-1-
 		-drive file=talos/generated/control-plane-1-seed.iso,if=virtio,format=raw \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50000-$(MGMT_CP_IP):50000,hostfwd=tcp::6443-$(MGMT_CP_IP):6443 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
-		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
+		-netdev vde,id=internal,sock=$(VDE_SOCK) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:01 \
 		-pidfile /tmp/qemu-control-plane-1.pid \
 		-daemonize -display none \
@@ -212,7 +228,7 @@ up-worker-1: disks/worker-1.qcow2 talos/generated/worker-1-seed.iso
 		-drive file=talos/generated/worker-1-seed.iso,if=virtio,format=raw \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50001-$(MGMT_W1_IP):50000 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:02 \
-		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
+		-netdev vde,id=internal,sock=$(VDE_SOCK) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:02 \
 		-pidfile /tmp/qemu-worker-1.pid \
 		-daemonize -display none \
@@ -230,7 +246,7 @@ up-worker-2: disks/worker-2.qcow2 talos/generated/worker-2-seed.iso
 		-drive file=talos/generated/worker-2-seed.iso,if=virtio,format=raw \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50002-$(MGMT_W2_IP):50000 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:03 \
-		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
+		-netdev vde,id=internal,sock=$(VDE_SOCK) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:03 \
 		-pidfile /tmp/qemu-worker-2.pid \
 		-daemonize -display none \
@@ -248,7 +264,7 @@ up-upstream: disks/upstream-router.qcow2 cloud-init/upstream-router/seed.iso
 		-drive file=cloud-init/upstream-router/seed.iso,if=virtio,format=raw \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2200-$(MGMT_UPSTREAM_IP):22 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:00 \
-		-netdev socket,id=internal,mcast=$(MCAST_ADDR) \
+		-netdev vde,id=internal,sock=$(VDE_SOCK) \
 		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:00 \
 		-pidfile /tmp/qemu-upstream-router.pid \
 		-daemonize -display none \
@@ -264,6 +280,11 @@ down:
 			rm -f /tmp/qemu-$$node.pid /tmp/qemu-$$node.sock; \
 		fi \
 	done
+	@if [ -S $(VDE_SOCK)/ctl ]; then \
+		echo "Stopping VDE switch..."; \
+		kill $$(lsof -t $(VDE_SOCK)/ctl 2>/dev/null) 2>/dev/null || true; \
+		rm -rf $(VDE_SOCK); \
+	fi
 
 # --- VM status ---
 
@@ -283,9 +304,18 @@ status:
 bootstrap:
 	TALOSCONFIG=$(TALOSCONFIG) talosctl bootstrap
 
-# Fetch kubeconfig from the control plane and merge into default location.
+# Fetch kubeconfig into a temp file, rewrite the API server endpoint to the
+# host-accessible port forward, then merge into the default kubeconfig.
+# Safe for multi-cluster setups: only the k8s-lab context is added/updated.
 kubeconfig:
-	TALOSCONFIG=$(TALOSCONFIG) talosctl kubeconfig --force
+	TALOSCONFIG=$(TALOSCONFIG) talosctl kubeconfig talos/generated/kubeconfig --force
+	kubectl config set-cluster k8s-lab --server=https://127.0.0.1:6443 \
+		--kubeconfig talos/generated/kubeconfig
+	KUBECONFIG=talos/generated/kubeconfig:$$HOME/.kube/config \
+		kubectl config view --flatten > $$HOME/.kube/config.tmp
+	mv $$HOME/.kube/config.tmp $$HOME/.kube/config
+	kubectl config use-context admin@k8s-lab
+	@echo "Merged k8s-lab context into ~/.kube/config"
 
 # Install Cilium CNI with eBPF datapath, kube-proxy replacement, and BGP.
 cilium-install:
@@ -321,13 +351,15 @@ console-%:
 # After bootstrap, the control plane proxies requests to workers.
 talos-dashboard:
 	TALOSCONFIG=$(TALOSCONFIG) talosctl dashboard \
-		-n $(MGMT_CP_IP),$(MGMT_W1_IP),$(MGMT_W2_IP)
+		-n $(MGMT_CP_IP),fd00:100::11,fd00:100::12
 
 # Verify cluster health: etcd, kubelet, and node readiness.
+# Worker IPs use the internal network (fd00:100::/64) since SLIRP IPs are
+# per-VM isolated NAT — the control plane can only reach workers via VDE.
 talos-health:
 	TALOSCONFIG=$(TALOSCONFIG) talosctl health \
 		--control-plane-nodes $(MGMT_CP_IP) \
-		--worker-nodes $(MGMT_W1_IP),$(MGMT_W2_IP)
+		--worker-nodes fd00:100::11,fd00:100::12
 
 # --- Cleanup ---
 

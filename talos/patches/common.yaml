@@ -10,6 +10,10 @@ machine:
     net.ipv6.conf.all.forwarding: "1"
     net.bridge.bridge-nf-call-iptables: "1"
     net.bridge.bridge-nf-call-ip6tables: "1"
+  kubelet:
+    nodeIP:
+      validSubnets:
+        - fd00:100::/64
   time:
     servers:
       - time.cloudflare.com
