@@ -14,6 +14,7 @@ machine:
           hardwareAddr: "52:54:00:00:02:02"
         addresses:
           - fd00:100::11/64
+          - 10.100.0.11/24
         dhcp: false
     nameservers:
       - 192.168.100.3

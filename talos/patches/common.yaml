@@ -14,12 +14,16 @@ machine:
     net.bridge.bridge-nf-call-ip6tables: "1"
   kubelet:
     nodeIP:
-      # Force kubelet to register with an address from the internal VDE network.
+      # Force kubelet to register with addresses from the internal VDE network.
       # Without this, kubelet picks the SLIRP management IP (192.168.100.x) which
       # is per-VM isolated NAT — unreachable from other VMs. The internal network
-      # (fd00:100::/64) is a shared L2 segment where all VMs can communicate.
+      # is a shared L2 segment where all VMs can communicate.
+      # IPv6 listed first → primary InternalIP is IPv6 (dual-stack, IPv6-primary).
+      # IPv4 (10.100.0.0/24) is required for Cilium's datapath — it needs an IPv4
+      # address on the routing device even in native routing mode.
       validSubnets:
         - fd00:100::/64
+        - 10.100.0.0/24
   time:
     servers:
       - time.cloudflare.com
