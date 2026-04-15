@@ -15,9 +15,12 @@
 
 QEMU := qemu-system-aarch64
 # EDK2 AAVMF: UEFI firmware for aarch64 (ARM has no BIOS fallback).
-FIRMWARE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
+# Uses pflash (not -bios): separate code (read-only) and per-VM variable store.
+# -bios is a shorthand that doesn't properly persist UEFI variables on ARM and
+# caused hangs with Talos v1.12+.
+FIRMWARE_CODE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
 
-TALOS_VERSION := v1.9.5
+TALOS_VERSION := v1.12.6
 # Default schematic (no extensions) from Talos Image Factory.
 # The nocloud variant reads machine config from a CIDATA ISO at boot.
 TALOS_SCHEMATIC := 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
@@ -104,26 +107,32 @@ images: images/debian-12-generic-arm64.qcow2 images/talos-arm64-nocloud.qcow2
 vms: $(foreach node,$(NODES),disks/$(node).qcow2)
 
 # Talos nodes back to the Talos base image.
+# Each VM also gets a 64MB UEFI variable store (pflash1) for persistent
+# UEFI settings. The code image (pflash0) is shared read-only.
 disks/control-plane-1.qcow2: images/talos-arm64-nocloud.qcow2
 	@mkdir -p disks
 	qemu-img create -f qcow2 -b ../images/talos-arm64-nocloud.qcow2 -F qcow2 $@
 	qemu-img resize $@ 20G
+	truncate -s 64M disks/control-plane-1-vars.fd
 
 disks/worker-1.qcow2: images/talos-arm64-nocloud.qcow2
 	@mkdir -p disks
 	qemu-img create -f qcow2 -b ../images/talos-arm64-nocloud.qcow2 -F qcow2 $@
 	qemu-img resize $@ 20G
+	truncate -s 64M disks/worker-1-vars.fd
 
 disks/worker-2.qcow2: images/talos-arm64-nocloud.qcow2
 	@mkdir -p disks
 	qemu-img create -f qcow2 -b ../images/talos-arm64-nocloud.qcow2 -F qcow2 $@
 	qemu-img resize $@ 20G
+	truncate -s 64M disks/worker-2-vars.fd
 
 # Upstream router backs to the Debian base image.
 disks/upstream-router.qcow2: images/debian-12-generic-arm64.qcow2
 	@mkdir -p disks
 	qemu-img create -f qcow2 -b ../images/debian-12-generic-arm64.qcow2 -F qcow2 $@
 	qemu-img resize $@ 20G
+	truncate -s 64M disks/upstream-router-vars.fd
 
 # --- Talos machine config generation ---
 
@@ -166,7 +175,7 @@ talos/generated/%-seed.iso: talos/generated/%.yaml
 	@echo "Generating Talos seed ISO for $*..."
 	@mkdir -p /tmp/talos-cidata-$*
 	@cp $< /tmp/talos-cidata-$*/user-data
-	@echo '{"instance-id": "$*"}' > /tmp/talos-cidata-$*/meta-data
+	@echo '{"instance-id": "$*", "local-hostname": "$*"}' > /tmp/talos-cidata-$*/meta-data
 	mkisofs -output $@ -volid cidata -joliet -rock /tmp/talos-cidata-$*/
 	@rm -rf /tmp/talos-cidata-$*
 
@@ -203,11 +212,14 @@ up-control-plane-1: disks/control-plane-1.qcow2 talos/generated/control-plane-1-
 	@echo "Starting control-plane-1 (Talos)..."
 	$(QEMU) \
 		-name control-plane-1 \
-		-machine virt,accel=hvf,highmem=on \
-		-cpu host -smp 2 -m 4G \
-		-bios $(FIRMWARE) \
+		-machine virt,gic-version=max,accel=hvf \
+		-cpu max -smp 2 -m 4G \
+		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
+		-drive file=disks/control-plane-1-vars.fd,format=raw,if=pflash \
 		-drive file=disks/control-plane-1.qcow2,if=virtio,format=qcow2 \
 		-drive file=talos/generated/control-plane-1-seed.iso,if=virtio,format=raw \
+		-device virtio-rng-pci \
+		-smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0 \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50000-$(MGMT_CP_IP):50000,hostfwd=tcp::6443-$(MGMT_CP_IP):6443 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
 		-netdev vde,id=internal,sock=$(VDE_SOCK) \
@@ -221,11 +233,14 @@ up-worker-1: disks/worker-1.qcow2 talos/generated/worker-1-seed.iso
 	@echo "Starting worker-1 (Talos)..."
 	$(QEMU) \
 		-name worker-1 \
-		-machine virt,accel=hvf,highmem=on \
-		-cpu host -smp 2 -m 4G \
-		-bios $(FIRMWARE) \
+		-machine virt,gic-version=max,accel=hvf \
+		-cpu max -smp 2 -m 4G \
+		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
+		-drive file=disks/worker-1-vars.fd,format=raw,if=pflash \
 		-drive file=disks/worker-1.qcow2,if=virtio,format=qcow2 \
 		-drive file=talos/generated/worker-1-seed.iso,if=virtio,format=raw \
+		-device virtio-rng-pci \
+		-smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0 \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50001-$(MGMT_W1_IP):50000 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:02 \
 		-netdev vde,id=internal,sock=$(VDE_SOCK) \
@@ -239,11 +254,14 @@ up-worker-2: disks/worker-2.qcow2 talos/generated/worker-2-seed.iso
 	@echo "Starting worker-2 (Talos)..."
 	$(QEMU) \
 		-name worker-2 \
-		-machine virt,accel=hvf,highmem=on \
-		-cpu host -smp 2 -m 4G \
-		-bios $(FIRMWARE) \
+		-machine virt,gic-version=max,accel=hvf \
+		-cpu max -smp 2 -m 4G \
+		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
+		-drive file=disks/worker-2-vars.fd,format=raw,if=pflash \
 		-drive file=disks/worker-2.qcow2,if=virtio,format=qcow2 \
 		-drive file=talos/generated/worker-2-seed.iso,if=virtio,format=raw \
+		-device virtio-rng-pci \
+		-smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0 \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50002-$(MGMT_W2_IP):50000 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:03 \
 		-netdev vde,id=internal,sock=$(VDE_SOCK) \
@@ -257,11 +275,13 @@ up-upstream: disks/upstream-router.qcow2 cloud-init/upstream-router/seed.iso
 	@echo "Starting upstream-router (Debian)..."
 	$(QEMU) \
 		-name upstream-router \
-		-machine virt,accel=hvf,highmem=on \
-		-cpu host -smp 1 -m 512M \
-		-bios $(FIRMWARE) \
+		-machine virt,gic-version=max,accel=hvf \
+		-cpu max -smp 1 -m 512M \
+		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
+		-drive file=disks/upstream-router-vars.fd,format=raw,if=pflash \
 		-drive file=disks/upstream-router.qcow2,if=virtio,format=qcow2 \
 		-drive file=cloud-init/upstream-router/seed.iso,if=virtio,format=raw \
+		-device virtio-rng-pci \
 		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2200-$(MGMT_UPSTREAM_IP):22 \
 		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:00 \
 		-netdev vde,id=internal,sock=$(VDE_SOCK) \

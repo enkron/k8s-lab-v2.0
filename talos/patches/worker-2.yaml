@@ -1,6 +1,5 @@
 machine:
   network:
-    hostname: worker-2
     interfaces:
       - deviceSelector:
           hardwareAddr: "52:54:00:00:01:03"
