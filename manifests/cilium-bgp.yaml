@@ -2,7 +2,7 @@
 # Workers peer via iBGP (AS 64512) with the FRR Route Reflector on
 # control-plane-1 and advertise their pod CIDRs.
 ---
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumBGPClusterConfig
 metadata:
   name: bgp-cluster
@@ -20,7 +20,7 @@ spec:
           peerConfigRef:
             name: rr-peer
 ---
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumBGPPeerConfig
 metadata:
   name: rr-peer
@@ -34,7 +34,7 @@ spec:
     enabled: true
     restartTimeSeconds: 120
 ---
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumBGPAdvertisement
 metadata:
   name: pod-cidrs
