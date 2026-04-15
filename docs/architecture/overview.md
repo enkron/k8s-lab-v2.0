@@ -175,10 +175,11 @@ This mirrors production practices where control and data planes are separated.
 
 ### 9.2 Addressing
 
-| Network          | Address | Family | Purpose          |
-|------------------|---------|--------|------------------|
-| 192.168.100.0/24 | IPv4    | Node   | management (NAT) |
-| fd00:100::/64    | IPv6    | Node   | internal routing |
+| Network          | Family | Purpose          |
+|------------------|--------|------------------|
+| 192.168.100.0/24 | IPv4   | management (SLIRP NAT, host-to-VM only) |
+| fd00:100::/64    | IPv6   | internal routing (primary) |
+| 10.100.0.0/24    | IPv4   | internal routing (secondary, required by Cilium) |
 
 - Management network uses QEMU user-mode NAT (SLIRP) with host port forwarding.
   Each VM gets its own isolated NAT — management IPs are **not** routable

@@ -119,6 +119,18 @@ entirely different:
 The lab runs **4 VMs total**: 1 upstream router + 1 control plane + 2 workers.
 The upstream router is infrastructure-only (no kubelet/container runtime).
 
+### 2.1.1 QEMU Configuration (aarch64/HVF)
+
+QEMU on Apple Silicon (HVF) requires specific flags that differ from Linux/KVM:
+
+| Flag | Value | Why |
+|------|-------|-----|
+| `-cpu` | `max` | Enables all QEMU-emulated CPU features; `-cpu host` causes hangs on HVF with Talos v1.12+ |
+| `-machine` | `virt,gic-version=max,accel=hvf` | `gic-version=max` selects the best GIC (interrupt controller); missing it defaults to GICv2 which breaks newer kernels |
+| UEFI firmware | Two `-drive if=pflash` (code RO + vars RW) | `-bios` shorthand doesn't persist UEFI variables properly on ARM; pflash with separate code and 64MB variable store is required |
+| Console | `-smbios type=11,...console=ttyS0` | Talos v1.12+ uses systemd-stub which reads console from SMBIOS, not kernel cmdline |
+| RNG | `-device virtio-rng-pci` | Hardware entropy source for faster boot |
+
 ### 2.2 Implementation Steps
 
 #### Step 2.2.1: Download Base Images
@@ -158,24 +170,34 @@ Patch files are stored in `talos/patches/`:
 - `common.yaml` — shared: kernel modules, sysctls, cluster CIDRs, CNI=none,
   kube-proxy=disabled, `machine.certSANs` includes `127.0.0.1` and `localhost`
   (required for talosctl access through QEMU NAT port forwarding),
-  `kubelet.nodeIP.validSubnets: [fd00:100::/64]` (forces kubelet to register
-  with internal VDE network addresses, not isolated SLIRP management IPs)
+  `kubelet.nodeIP.validSubnets: [fd00:100::/64, 10.100.0.0/24]` (forces
+  kubelet to register with internal VDE network addresses — IPv6 primary, IPv4
+  secondary for Cilium native routing datapath)
 - `controlplane.yaml` — scheduler, controller-manager, API server bind
   addresses, API server certSANs for all access paths,
   `etcd.advertisedSubnets: [fd00:100::/64]` (etcd must advertise on the
   internal network — default SLIRP addresses are per-VM isolated NAT)
 - `worker.yaml` — worker-specific labels
-- `control-plane-1.yaml` — hostname, MAC-based NIC matching, static IPs
+- `control-plane-1.yaml` — MAC-based NIC matching, static IPs
 - `worker-1.yaml`, `worker-2.yaml` — same pattern per node
+
+Note: Talos v1.12+ requires hostname in the nocloud `meta-data` file (not in
+`machine.network.hostname`). The seed ISO generation sets `local-hostname` in
+meta-data automatically.
 
 Network configuration is fully declarative in the machine config. Both NICs
 receive static addresses at first boot (no manual post-boot step):
 
-| Node            | Management NIC (by MAC)     | Internal NIC (by MAC)       |
-|-----------------|-----------------------------|-----------------------------|
-| control-plane-1 | 192.168.100.10/24           | fd00:100::10/64             |
-| worker-1        | 192.168.100.11/24           | fd00:100::11/64             |
-| worker-2        | 192.168.100.12/24           | fd00:100::12/64             |
+| Node            | Management NIC (by MAC)     | Internal NIC (by MAC)                  |
+|-----------------|-----------------------------|-----------------------------------------|
+| control-plane-1 | 192.168.100.10/24           | fd00:100::10/64, 10.100.0.10/24        |
+| worker-1        | 192.168.100.11/24           | fd00:100::11/64, 10.100.0.11/24        |
+| worker-2        | 192.168.100.12/24           | fd00:100::12/64, 10.100.0.12/24        |
+
+The internal NIC carries both IPv6 (primary) and IPv4 (secondary). The IPv4
+address (`10.100.0.0/24`) is required because Cilium's native routing datapath
+needs an IPv4 source address on the routing device, even when the cluster
+endpoint is IPv6.
 
 Talos uses `deviceSelector.hardwareAddr` for MAC-based NIC binding (equivalent
 to cloud-init's `match.macaddress`). DHCP and SLAAC are disabled on all
@@ -407,9 +429,9 @@ Expected output: 3 nodes in `NotReady` state (CNI not yet installed).
 
 ```text
 NAME              STATUS     ROLES           AGE   VERSION
-control-plane-1   NotReady   control-plane   1m    v1.32.x
-worker-1          NotReady   <none>          1m    v1.32.x
-worker-2          NotReady   <none>          1m    v1.32.x
+control-plane-1   NotReady   control-plane   1m    v1.35.x
+worker-1          NotReady   <none>          1m    v1.35.x
+worker-2          NotReady   <none>          1m    v1.35.x
 ```
 
 Workers auto-join because their machine config contains the cluster
@@ -803,4 +825,5 @@ make down
 | Version | Date       | Author    | Changes                                   |
 |---------|------------|-----------|-------------------------------------------|
 | 1.0     | 2026-01-23 | Generated | Initial implementation plan               |
-| 2.0     | 2026-04-10 | Generated | Talos Linux v1.9.5 migration, iBGP+RR with Cilium |
+| 2.0     | 2026-04-10 | Generated | Talos Linux migration, iBGP+RR with Cilium |
+| 2.1     | 2026-04-15 | Generated | Talos v1.12.6, VDE networking, pflash UEFI, native routing, dual-stack internal NIC |
