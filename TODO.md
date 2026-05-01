@@ -1,7 +1,7 @@
 # List of TODO Tasks
 
 - [x] **Validate Talos nocloud CIDATA**: Confirmed mkisofs seed ISO is read
-  correctly by Talos machined on aarch64/HVF (Talos v1.12.6)
+  correctly by Talos machined on aarch64/HVF (Talos v1.13.0)
 - [ ] **Iterate on BGP policies**: Experiment with route filtering
 - [ ] **Add network policies**: Test Cilium network policy enforcement
 - [ ] **Stress test**: Deploy resource-intensive workloads

@@ -12,7 +12,7 @@ architecture with IPv6-first networking, BGP routing, and eBPF datapath.
       |            |                   |            |
  [upstream-     [control-          [worker-1]   [worker-2]
   router]        plane-1]
-  Debian 12      Talos v1.12        Talos        Talos
+  Debian 12      Talos v1.13        Talos        Talos
   FRR (eBGP)     FRR pod (RR)      Cilium BGP   Cilium BGP
       |            |                   |            |
       +------------+---------+---------+------------+
