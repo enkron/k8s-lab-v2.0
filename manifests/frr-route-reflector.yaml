@@ -30,7 +30,7 @@ data:
   vtysh.conf: |
     service integrated-vtysh-config
   frr.conf: |
-    frr version 10.3
+    frr version 10.4
     frr defaults traditional
     hostname control-plane-1
     log syslog informational
@@ -102,7 +102,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: frr
-          image: quay.io/frrouting/frr:10.3.1
+          image: quay.io/frrouting/frr:10.4.4
           securityContext:
             capabilities:
               add:

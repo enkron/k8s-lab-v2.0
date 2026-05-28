@@ -20,10 +20,10 @@ QEMU := qemu-system-aarch64
 # caused hangs with Talos v1.12+.
 FIRMWARE_CODE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
 
-TALOS_VERSION := v1.13.0
-# Pin Kubernetes to 1.35.x: Talos v1.13.0 defaults to K8s 1.36.0, but the
+TALOS_VERSION := v1.13.2
+# Pin Kubernetes to 1.35.x: Talos v1.13.2 defaults to K8s 1.36.0, but the
 # current stable Cilium (1.19.x) is only e2e-tested up to K8s 1.35.
-KUBERNETES_VERSION := 1.35.4
+KUBERNETES_VERSION := 1.35.5
 # Default schematic (no extensions) from Talos Image Factory.
 # The nocloud variant reads machine config from a CIDATA ISO at boot.
 TALOS_SCHEMATIC := 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
@@ -346,6 +346,7 @@ cilium-install:
 	helm repo add cilium https://helm.cilium.io/ 2>/dev/null || true
 	helm repo update
 	helm install cilium cilium/cilium \
+		--version 1.19.4 \
 		--namespace kube-system \
 		-f manifests/cilium-values.yaml
 
