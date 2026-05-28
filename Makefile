@@ -4,6 +4,11 @@
 # Upstream router runs Debian 12 with FRR for BGP edge routing.
 # All VMs use QEMU aarch64 with HVF acceleration on Apple Silicon.
 
+# Remove a target file if its recipe fails, so an aborted/truncated download
+# (e.g. a dropped mirror connection) is not mistaken for a complete image on
+# the next run.
+.DELETE_ON_ERROR:
+
 # Actions
 .PHONY: help up down clean nuke status images vms seed cloud-init vde-up
 .PHONY: talos-gen talos-configs talos-seed
@@ -95,7 +100,10 @@ help:
 images/debian-12-generic-arm64.qcow2:
 	@mkdir -p images
 	@echo "Downloading Debian 12 cloud image (aarch64)..."
-	curl -L -o $@ \
+	@# -f: treat HTTP errors as failures (don't save an error page as the image).
+	@# --retry-all-errors: cloud.debian.org redirects to regional mirrors that
+	@# intermittently drop the connection (curl exit 52); retry those too.
+	curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o $@ \
 		https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
 
 # Talos nocloud image for Kubernetes nodes.
@@ -103,7 +111,7 @@ images/debian-12-generic-arm64.qcow2:
 images/talos-arm64-nocloud.qcow2:
 	@mkdir -p images
 	@echo "Downloading Talos $(TALOS_VERSION) nocloud image (aarch64)..."
-	curl -L -o images/nocloud-arm64.raw.zst $(TALOS_IMAGE_URL)
+	curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o images/nocloud-arm64.raw.zst $(TALOS_IMAGE_URL)
 	zstd -d images/nocloud-arm64.raw.zst --output-dir-flat images/
 	qemu-img convert -f raw -O qcow2 images/nocloud-arm64.raw $@
 	rm -f images/nocloud-arm64.raw images/nocloud-arm64.raw.zst
