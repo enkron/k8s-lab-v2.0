@@ -27,6 +27,24 @@ machine:
   time:
     servers:
       - time.cloudflare.com
+  # When the lab runs behind a TLS-intercepting proxy, registry certificates are
+  # re-signed with a corporate root CA the Talos nodes do not trust, so image
+  # pulls fail with "x509: certificate signed by unknown authority". Skip cert
+  # verification for the registries we pull from.
+  registries:
+    config:
+      registry.k8s.io:
+        tls:
+          insecureSkipVerify: true
+      ghcr.io:
+        tls:
+          insecureSkipVerify: true
+      quay.io:
+        tls:
+          insecureSkipVerify: true
+      docker.io:
+        tls:
+          insecureSkipVerify: true
 cluster:
   network:
     # Cilium is installed separately via Helm (make cilium-install).
@@ -44,3 +62,12 @@ cluster:
   proxy:
     # Cilium replaces kube-proxy with eBPF-based service routing.
     disabled: true
+  discovery:
+    registries:
+      # The external service registry (discovery.talos.dev:443) is unreachable
+      # behind a TLS-intercepting proxy (see machine.registries above) and is not
+      # needed here: membership is static and KubeSpan is not used. Disable only
+      # the service registry; the Kubernetes registry still discovers members
+      # once the API server is up.
+      service:
+        disabled: true
