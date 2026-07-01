@@ -828,3 +828,4 @@ make down
 | 2.0     | 2026-04-10 | Generated | Talos Linux migration, iBGP+RR with Cilium |
 | 2.1     | 2026-04-15 | Generated | Talos v1.12.6, VDE networking, pflash UEFI, native routing, dual-stack internal NIC |
 | 2.2     | 2026-05-01 | Generated | Talos v1.13.0; Kubernetes pinned to v1.35.4 (Cilium 1.19 stable until 1.20 GA) |
+| 2.3     | 2026-07-01 | Generated | Talos v1.13.5, Kubernetes 1.35.6, Cilium 1.19.5, FRR 10.4.4 |

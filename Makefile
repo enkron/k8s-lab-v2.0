@@ -26,14 +26,14 @@ QEMU := qemu-system-aarch64
 FIRMWARE_CODE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
 
 # Cluster version triad — pinned together because they move as a tested set:
-# Talos v1.13.2 defaults to K8s 1.36.0, but stable Cilium (1.19.x) is only
+# Talos v1.13.5 defaults to K8s 1.36.2, but stable Cilium (1.19.x) is only
 # e2e-tested up to K8s 1.35, so K8s is held at 1.35.x. Keep all three in sync
 # within Cilium's supported window before bumping any one of them.
-TALOS_VERSION := v1.13.2
-KUBERNETES_VERSION := 1.35.5
+TALOS_VERSION := v1.13.5
+KUBERNETES_VERSION := 1.35.6
 # CILIUM_VERSION pins the Helm chart (resolved against the repo index at
 # install time), unlike KUBERNETES_VERSION which bakes into generated configs.
-CILIUM_VERSION := 1.19.4
+CILIUM_VERSION := 1.19.5
 # Default schematic (no extensions) from Talos Image Factory.
 # The nocloud variant reads machine config from a CIDATA ISO at boot.
 TALOS_SCHEMATIC := 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
