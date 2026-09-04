@@ -24,7 +24,54 @@ disable_root: true
 
 timezone: UTC
 
+# Refresh the package index but skip the first-boot dist-upgrade: the `latest` cloud image
+# already tracks the current point release, and a full upgrade on a 512MB VM delays (or
+# aborts) the FRR install below.
 package_update: true
-package_upgrade: true
+
+# FRR makes this VM the eBGP upstream (AS 64513) for the Route Reflector on
+# control-plane-1. Debian 13 (trixie) ships FRR 10.3.
+packages:
+  - frr
+
+# cloud-init final-stage order: packages are installed first, deferred files are written
+# next (so the `frr` user exists and dpkg never sees a pre-existing conffile), and runcmd
+# scripts run last.
+write_files:
+  - path: /etc/frr/frr.conf
+    owner: frr:frr
+    permissions: "0640"
+    defer: true
+    content: |
+      frr version 10.3
+      frr defaults traditional
+      hostname upstream-router
+      log syslog informational
+      service integrated-vtysh-config
+      !
+      router bgp 64513
+       bgp router-id 10.100.0.1
+       no bgp ebgp-requires-policy
+       !
+       ! eBGP peer to the Route Reflector on control-plane-1
+       neighbor fd00:100::10 remote-as 64512
+       neighbor fd00:100::10 description rr-control-plane-1
+       !
+       address-family ipv4 unicast
+        neighbor fd00:100::10 activate
+        neighbor fd00:100::10 default-originate
+       exit-address-family
+       !
+       address-family ipv6 unicast
+        neighbor fd00:100::10 activate
+        neighbor fd00:100::10 default-originate
+       exit-address-family
+      exit
+      !
+
+runcmd:
+  # Enable bgpd in the packaged daemons file (edited in place so dpkg keeps owning it).
+  - sed -i 's/^bgpd=no/bgpd=yes/' /etc/frr/daemons
+  - systemctl restart frr
 
 final_message: "cloud-init completed for upstream-router ($UPTIME s)"

@@ -1,408 +1,566 @@
-# k8s-lab v2.0 — Talos Linux + Debian hybrid
+# k8s-lab v2.0 - Talos Linux + Debian hybrid
 #
 # Kubernetes nodes (control-plane-1, worker-1, worker-2) run Talos Linux.
-# Upstream router runs Debian 12 with FRR for BGP edge routing.
+# Upstream router runs Debian 13 with FRR for BGP edge routing (installed by cloud-init).
 # All VMs use QEMU aarch64 with HVF acceleration on Apple Silicon.
+#
+# 'make help' lists the targets: a '## text' after a target documents it and a line starting
+# with '##@ Name' opens a section. Requires GNU Make 4.x (grouped targets, .SHELLFLAGS).
+# tests/ and CI read pinned versions with 'make -s print-<VAR>' (see print-%).
 
-# Remove a target file if its recipe fails, so an aborted/truncated download
-# (e.g. a dropped mirror connection) is not mistaken for a complete image on
-# the next run.
+# Grouped targets (&:) below are parse errors on the macOS system make (3.81); fail early with a
+# hint. Keep this the first statement in the file.
+ifeq ($(filter 4.% 5.%,$(MAKE_VERSION)),)
+$(error GNU Make >= 4.x is required (found $(MAKE_VERSION)); add nixpkgs gnumake to the profile)
+endif
+
+# --- Global settings ---
+
+# -r/-R: no builtin rules or variables (this is not a C build). --warn-undefined-variables catches
+# typos in the per-node lookups ($(MEM_$*) and friends); it applies from this line on, so data is
+# defined before it is referenced. GNUMAKEFLAGS is read by make itself before it is set, which
+# would trip that warning in every sub-make (tests/ call 'make -s print-<VAR>'); define it empty.
+GNUMAKEFLAGS ?=
+MAKEFLAGS += --no-builtin-rules --no-builtin-variables --warn-undefined-variables
+# -R resets .SHELLFLAGS to '-c', so set both explicitly. bash rather than sh: 'make test' also runs
+# on Linux CI runners where /bin/sh is dash, which has no pipefail. /bin/bash exists on macOS
+# (3.2) and Ubuntu. -e: a recipe line stops at its first failing command; -u: an unset $VAR is an
+# error; pipefail: a failing producer fails the pipeline.
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+.DEFAULT_GOAL := help
+# Remove a target if its recipe fails, so a truncated download or a half-written config is not
+# mistaken for a complete artifact on the next run. Applies to every member of a grouped target.
 .DELETE_ON_ERROR:
 
-# Actions
-.PHONY: help up down clean nuke status images vms seed cloud-init vde-up
-.PHONY: talos-gen talos-configs talos-seed
-.PHONY: bootstrap kubeconfig cilium-install frr-rr cilium-bgp
-.PHONY: talos-dashboard talos-health
-.PHONY: ssh-upstream console-%
+# --- Tools ---
+# Override on the command line or in the environment, e.g. 'make QEMU=/path/to/qemu up'.
 
-# --- Configuration ---
+QEMU     ?= qemu-system-aarch64
+QEMU_IMG ?= qemu-img
+KUBECTL  ?= kubectl
+HELM     ?= helm
+MKISOFS  ?= mkisofs
+ZSTD     ?= zstd
+SOCAT    ?= socat
+CURL     ?= curl
+JQ       ?= jq
+# talosctl binary. The machine config patches use Talos 1.14 multi-document kinds, so the client
+# must not be older than TALOS_VERSION (checked by 'make check-tools'). Exported because tests/
+# fall back to it: TALOSCTL=${TALOSCTL:-$(make -s print-TALOSCTL)}.
+TALOSCTL ?= talosctl
+export TALOSCTL
+# -f: treat HTTP errors as failures (never save an error page as an image).
+# --retry-all-errors: cloud.debian.org redirects to regional mirrors that intermittently drop the
+# connection (curl exit 52); retry those too.
+CURL_FLAGS ?= -fL --retry 5 --retry-delay 5 --retry-all-errors
 
-QEMU := qemu-system-aarch64
-# EDK2 AAVMF: UEFI firmware for aarch64 (ARM has no BIOS fallback).
-# Uses pflash (not -bios): separate code (read-only) and per-VM variable store.
-# -bios is a shorthand that doesn't properly persist UEFI variables on ARM and
-# caused hangs with Talos v1.12+.
-FIRMWARE_CODE := $(shell nix build nixpkgs\#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd
+# EDK2 AAVMF: UEFI firmware for aarch64 (ARM has no BIOS fallback). Used as pflash, not -bios:
+# separate read-only code and a per-VM variable store. -bios does not persist UEFI variables on
+# ARM and caused hangs with Talos v1.12+. The firmware comes from the same qemu package as the
+# emulator on PATH (resolve the profile symlink, go up from bin/, append share/qemu/), so the two
+# cannot drift apart. Recursive (=) so the lookup only runs when a recipe expands it.
+qemu-path     = $(or $(realpath $(shell command -v $(QEMU))),$(error '$(QEMU)' not found on PATH))
+QEMU_PREFIX   = $(abspath $(dir $(qemu-path))..)
+FIRMWARE_CODE ?= $(QEMU_PREFIX)/share/qemu/edk2-aarch64-code.fd
 
-# Cluster version triad — pinned together because they move as a tested set:
-# Talos v1.13.5 defaults to K8s 1.36.2, but stable Cilium (1.19.x) is only
-# e2e-tested up to K8s 1.35, so K8s is held at 1.35.x. Keep all three in sync
-# within Cilium's supported window before bumping any one of them.
-TALOS_VERSION := v1.13.5
-KUBERNETES_VERSION := 1.35.6
-# CILIUM_VERSION pins the Helm chart (resolved against the repo index at
-# install time), unlike KUBERNETES_VERSION which bakes into generated configs.
-CILIUM_VERSION := 1.19.5
-# Default schematic (no extensions) from Talos Image Factory.
-# The nocloud variant reads machine config from a CIDATA ISO at boot.
+# VDE (Virtual Distributed Ethernet) switch provides the internal L2 segment. QEMU's built-in
+# multicast socket (-netdev socket,mcast=) is broken on macOS: the kernel ignores
+# IP_MULTICAST_LOOP=0 semantics and drops all local delivery. VDE is a userspace switch: no root,
+# no entitlements. vde_switch is not in the nix profile: use PATH when present, otherwise resolve
+# it through nix, lazily and once per make run (the $(eval) turns VDE_SWITCH into a simple variable
+# on first use), so help/status/clean never pay for a nix evaluation. '\#' reaches the shell
+# unchanged on make >= 4.3 (which quotes it) and as '#' on older 4.x; both spell nixpkgs#vde2.
+nix-vde2        = $(shell nix build nixpkgs\#vde2 --print-out-paths --no-link)
+find-vde_switch = $(or $(shell command -v vde_switch),$(nix-vde2)/bin/vde_switch)
+VDE_SWITCH     ?= $(eval VDE_SWITCH := $(find-vde_switch))$(VDE_SWITCH)
+
+# --- Versions ---
+# Read by tests/ and CI through 'make -s print-<VAR>'; keep the names and value formats.
+
+# Cluster version triad - pinned together because they move as a tested set: Talos v1.14.0
+# defaults to K8s 1.37.0, but stable Cilium (1.20.x) is only e2e-tested up to K8s 1.36, so K8s is
+# held at 1.36.x. Keep all three within Cilium's supported window before bumping any one of them.
+TALOS_VERSION      := v1.14.0
+KUBERNETES_VERSION := 1.36.4
+# CILIUM_VERSION pins the Helm chart (resolved against the repo index at install time), unlike
+# TALOS_VERSION and KUBERNETES_VERSION which bake into the generated machine configs.
+CILIUM_VERSION := 1.20.1
+# FRR_VERSION pins the Route Reflector pod image. manifests/frr-route-reflector.yaml must carry
+# the same tag and a matching 'frr version' header; tests/check-versions.sh enforces both.
+# FRR_ROUTER_VERSION is the FRR release the upstream router gets from its Debian release via apt
+# (not chosen here); the matching quay.io tag is used only to dry-run the router's frr.conf in
+# tests/validate-frr.sh.
+FRR_VERSION        := 10.7.1
+FRR_ROUTER_VERSION := 10.3.4
+# Debian release for the upstream router. Codename and major version describe the same release
+# (13 == trixie); keep them in step.
+DEBIAN_RELEASE   := trixie
+DEBIAN_VERSION   := 13
+DEBIAN_IMAGE_URL := https://cloud.debian.org/images/cloud/$(DEBIAN_RELEASE)/latest/debian-$(DEBIAN_VERSION)-generic-arm64.qcow2
+# Default schematic (no extensions) from Talos Image Factory. The nocloud variant reads machine
+# config from a CIDATA ISO at boot.
 TALOS_SCHEMATIC := 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
 TALOS_IMAGE_URL := https://factory.talos.dev/image/$(TALOS_SCHEMATIC)/$(TALOS_VERSION)/nocloud-arm64.raw.zst
+# Installer image for first boot and for 'talosctl upgrade --image'. Image Factory installers are
+# platform-specific (<platform>-installer); the VMs boot the nocloud image, so the nocloud
+# installer matches. ghcr.io/siderolabs/installer is no longer published since Talos 1.14.
+TALOS_INSTALLER_IMAGE := factory.talos.dev/nocloud-installer/$(TALOS_SCHEMATIC):$(TALOS_VERSION)
 
-TALOS_NODES := control-plane-1 worker-1 worker-2
-DEBIAN_NODES := upstream-router
-NODES := $(TALOS_NODES) $(DEBIAN_NODES)
+# --- Node inventory ---
+
+TALOS_CP_NODES     := control-plane-1
+TALOS_WORKER_NODES := worker-1 worker-2
+TALOS_NODES        := $(TALOS_CP_NODES) $(TALOS_WORKER_NODES)
+DEBIAN_NODES       := upstream-router
+NODES              := $(TALOS_NODES) $(DEBIAN_NODES)
+
+# Two NICs per VM:
+#   mgmt (QEMU user-mode NAT): host SSH/API/talosctl access via port forwarding. SLIRP networks
+#     are isolated per VM, so VMs cannot reach each other over them.
+#   internal (VDE switch): shared L2 segment for inter-VM traffic (BGP, pods).
+# Stable MAC addresses let Talos/cloud-init bind NICs deterministically. The same MACs and IPs
+# appear in talos/patches/<node>.yaml and cloud-init/upstream-router/network-config; keep them in
+# sync.
+MGMT_NET       := 192.168.100.0/24
+TALOS_API_PORT := 50000
+K8S_API_PORT   := 6443
+SSH_PORT       := 2200
+SSH_USER       := k8s
+
+SMP_upstream-router          := 1
+MEM_upstream-router          := 512M
+MAC_MGMT_upstream-router     := 52:54:00:00:01:00
+MAC_INTERNAL_upstream-router := 52:54:00:00:02:00
+IP_MGMT_upstream-router      := 192.168.100.13
+HOSTFWD_upstream-router      := hostfwd=tcp::$(SSH_PORT)-$(IP_MGMT_upstream-router):22
+
+SMP_control-plane-1          := 2
+MEM_control-plane-1          := 4G
+MAC_MGMT_control-plane-1     := 52:54:00:00:01:01
+MAC_INTERNAL_control-plane-1 := 52:54:00:00:02:01
+IP_MGMT_control-plane-1      := 192.168.100.10
+IP_INTERNAL_control-plane-1  := fd00:100::10
+# Two forwards; built in two steps because a backslash continuation would insert a space.
+HOSTFWD_control-plane-1 := hostfwd=tcp::$(TALOS_API_PORT)-$(IP_MGMT_control-plane-1):50000
+HOSTFWD_control-plane-1 := $(HOSTFWD_control-plane-1),hostfwd=tcp::$(K8S_API_PORT)-$(IP_MGMT_control-plane-1):6443
+
+SMP_worker-1          := 2
+MEM_worker-1          := 4G
+MAC_MGMT_worker-1     := 52:54:00:00:01:02
+MAC_INTERNAL_worker-1 := 52:54:00:00:02:02
+IP_MGMT_worker-1      := 192.168.100.11
+IP_INTERNAL_worker-1  := fd00:100::11
+HOSTFWD_worker-1      := hostfwd=tcp::50001-$(IP_MGMT_worker-1):50000
+
+SMP_worker-2          := 2
+MEM_worker-2          := 4G
+MAC_MGMT_worker-2     := 52:54:00:00:01:03
+MAC_INTERNAL_worker-2 := 52:54:00:00:02:03
+IP_MGMT_worker-2      := 192.168.100.12
+IP_INTERNAL_worker-2  := fd00:100::12
+HOSTFWD_worker-2      := hostfwd=tcp::50002-$(IP_MGMT_worker-2):50000
+
+# --- Cluster ---
 
 CLUSTER_NAME := k8s-lab
-# Workers reach the API server over the internal multicast network (fd00:100::/64),
-# not through SLIRP management IPs (which are isolated per-VM NAT).
-CLUSTER_ENDPOINT := https://[fd00:100::10]:6443
-TALOSCONFIG := talos/generated/talosconfig
+# Workers reach the API server over the internal network (fd00:100::/64), not through SLIRP
+# management IPs (isolated per-VM NAT).
+CLUSTER_ENDPOINT    := https://[$(IP_INTERNAL_control-plane-1)]:$(K8S_API_PORT)
+CP_INTERNAL_IPS     := $(foreach n,$(TALOS_CP_NODES),$(IP_INTERNAL_$(n)))
+WORKER_INTERNAL_IPS := $(foreach n,$(TALOS_WORKER_NODES),$(IP_INTERNAL_$(n)))
+DISK_SIZE := 20G
+# Per-VM UEFI variable store (pflash1); the code image (pflash0) is shared read-only.
+VARS_SIZE := 64M
 
-# VDE (Virtual Distributed Ethernet) switch provides the internal L2 segment.
-# QEMU's built-in multicast socket (-netdev socket,mcast=) is broken on macOS:
-# the kernel ignores IP_MULTICAST_LOOP=0 semantics and drops all local delivery.
-# VDE creates a proper userspace virtual switch — no root, no entitlements.
-VDE_SWITCH := $(shell nix build nixpkgs\#vde2 --print-out-paths --no-link)/bin/vde_switch
-VDE_SOCK := /tmp/vde-k8s-lab.ctl
-MGMT_NET := 192.168.100.0/24
-MGMT_CP_IP := 192.168.100.10
-MGMT_W1_IP := 192.168.100.11
-MGMT_W2_IP := 192.168.100.12
-MGMT_UPSTREAM_IP := 192.168.100.13
+# --- Paths and generated files ---
 
-# --- Help ---
+IMAGE_DIR       := images
+DISK_DIR        := disks
+TALOS_PATCH_DIR := talos/patches
+TALOS_GEN_DIR   := talos/generated
+CLOUD_INIT_DIR  := cloud-init
+MANIFEST_DIR    := manifests
+TEST_DIR        := tests
+# Pidfiles, serial console sockets and the VDE control socket. Kept short because unix socket
+# paths are limited to 104 bytes on macOS; cleared on reboot together with the VMs.
+RUN_DIR ?= /tmp/$(CLUSTER_NAME)
+DIRS := $(IMAGE_DIR)/ $(DISK_DIR)/ $(TALOS_GEN_DIR)/ $(RUN_DIR)/
 
-help:
-	@echo "k8s-lab v2.0 — Talos Linux + Debian hybrid"
-	@echo ""
-	@echo "Infrastructure:"
-	@echo "  make images              Download base VM images (Debian + Talos)"
-	@echo "  make vms                 Create per-node CoW disk images"
-	@echo "  make seed                Generate all seed ISOs (Talos + cloud-init)"
-	@echo "  make up                  Start all VMs"
-	@echo "  make down                Stop all VMs"
-	@echo "  make status              Show VM status"
-	@echo "  make clean               Remove disks, generated configs, and ISOs"
-	@echo "  make nuke                Remove everything including base images"
-	@echo ""
-	@echo "Talos config:"
-	@echo "  make talos-gen           Generate base Talos machine configs"
-	@echo "  make talos-configs       Patch per-node Talos configs"
-	@echo "  make talos-seed          Generate CIDATA ISOs for Talos nodes"
-	@echo ""
-	@echo "Cluster lifecycle:"
-	@echo "  make bootstrap           Bootstrap etcd + control plane (once)"
-	@echo "  make kubeconfig          Retrieve kubeconfig from Talos"
-	@echo "  make cilium-install      Install Cilium CNI via Helm"
-	@echo "  make frr-rr              Deploy FRR Route Reflector pod on control-plane-1"
-	@echo "  make cilium-bgp          Apply Cilium iBGP peering CRDs for workers"
-	@echo ""
-	@echo "Access & debugging:"
-	@echo "  make ssh-upstream        SSH to upstream router (Debian)"
-	@echo "  make console-<node>      Serial console via QEMU socket"
-	@echo "  make talos-dashboard     Interactive Talos TUI dashboard"
-	@echo "  make talos-health        Check cluster health"
+DEBIAN_IMAGE  := $(IMAGE_DIR)/debian-$(DEBIAN_VERSION)-generic-arm64.qcow2
+# The Talos version is part of the filename so bumping TALOS_VERSION downloads a new image instead
+# of silently reusing the old one.
+TALOS_IMAGE   := $(IMAGE_DIR)/talos-$(TALOS_VERSION)-nocloud-arm64.qcow2
+TALOS_RAW     := $(TALOS_IMAGE:.qcow2=.raw)
+TALOS_RAW_ZST := $(TALOS_RAW).zst
 
-# --- Base images ---
+DISKS := $(NODES:%=$(DISK_DIR)/%.qcow2)
+VARS  := $(NODES:%=$(DISK_DIR)/%-vars.fd)
 
-# Debian 12 cloud image for the upstream router.
-images/debian-12-generic-arm64.qcow2:
-	@mkdir -p images
-	@echo "Downloading Debian 12 cloud image (aarch64)..."
-	@# -f: treat HTTP errors as failures (don't save an error page as the image).
-	@# --retry-all-errors: cloud.debian.org redirects to regional mirrors that
-	@# intermittently drop the connection (curl exit 52); retry those too.
-	curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o $@ \
-		https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2
+TALOS_SECRETS      := $(TALOS_GEN_DIR)/secrets.yaml
+TALOS_BASE_CONFIGS := $(TALOS_GEN_DIR)/controlplane.yaml $(TALOS_GEN_DIR)/worker.yaml
+TALOSCONFIG        := $(TALOS_GEN_DIR)/talosconfig
+# Exported so every talosctl invocation in a recipe picks it up.
+export TALOSCONFIG
+TALOS_NODE_CONFIGS := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.yaml)
+TALOS_META_DATA    := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.meta-data)
+TALOS_SEEDS        := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%-seed.iso)
+CLOUD_INIT_SEED    := $(CLOUD_INIT_DIR)/upstream-router/seed.iso
+# Not KUBECONFIG: a make variable of that name would be exported over the user's own setting.
+# tests/e2e.sh defaults to this path.
+KUBECONFIG_FILE    := $(TALOS_GEN_DIR)/kubeconfig
 
-# Talos nocloud image for Kubernetes nodes.
-# Downloaded as zstd-compressed raw from Image Factory, converted to qcow2.
-images/talos-arm64-nocloud.qcow2:
-	@mkdir -p images
-	@echo "Downloading Talos $(TALOS_VERSION) nocloud image (aarch64)..."
-	curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o images/nocloud-arm64.raw.zst $(TALOS_IMAGE_URL)
-	zstd -d images/nocloud-arm64.raw.zst --output-dir-flat images/
-	qemu-img convert -f raw -O qcow2 images/nocloud-arm64.raw $@
-	rm -f images/nocloud-arm64.raw images/nocloud-arm64.raw.zst
+VDE_CTL  := $(RUN_DIR)/vde.ctl
+VDE_PID  := $(RUN_DIR)/vde.pid
+PIDFILES := $(NODES:%=$(RUN_DIR)/%.pid)
 
-images: images/debian-12-generic-arm64.qcow2 images/talos-arm64-nocloud.qcow2
+empty :=
+space := $(empty) $(empty)
+comma := ,
+# $(call join-comma,<list>): "a b c" -> "a,b,c"
+join-comma = $(subst $(space),$(comma),$(strip $(1)))
 
-# --- VM disks (CoW backing) ---
+##@ General
 
-vms: $(foreach node,$(NODES),disks/$(node).qcow2)
+.PHONY: help
+help: ## Show this help
+	@awk 'BEGIN { FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n" } \
+	  /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5); next } \
+	  /^(\$$\([^)]*\): )?[a-zA-Z0-9_][a-zA-Z0-9_%.-]*:.*##/ \
+	    { sub(/^\$$\([^)]*\): /, ""); printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' \
+	  $(MAKEFILE_LIST)
 
-# Talos nodes back to the Talos base image.
-# Each VM also gets a 64MB UEFI variable store (pflash1) for persistent
-# UEFI settings. The code image (pflash0) is shared read-only.
-disks/control-plane-1.qcow2: images/talos-arm64-nocloud.qcow2
-	@mkdir -p disks
-	qemu-img create -f qcow2 -b ../images/talos-arm64-nocloud.qcow2 -F qcow2 $@
-	qemu-img resize $@ 20G
-	truncate -s 64M disks/control-plane-1-vars.fd
+# Print a Makefile variable: 'make -s print-TALOS_VERSION'. Used by tests/ and CI so the Makefile
+# stays the single source of truth for versions.
+print-%: ## Print a Makefile variable (make -s print-<VAR>)
+	@echo '$($*)'
 
-disks/worker-1.qcow2: images/talos-arm64-nocloud.qcow2
-	@mkdir -p disks
-	qemu-img create -f qcow2 -b ../images/talos-arm64-nocloud.qcow2 -F qcow2 $@
-	qemu-img resize $@ 20G
-	truncate -s 64M disks/worker-1-vars.fd
+# The patches in talos/patches/ use Talos 1.14 multi-document kinds (KubeNetworkConfig,
+# KubeNodeConfig, ...). An older talosctl does not know them and fails with "not registered". A
+# newer client is fine: --talos-version pins the generated layout. The '|| true' inside the
+# substitutions keep a missing binary on the friendly-message path under pipefail.
+.PHONY: check-tools
+check-tools: ## Verify talosctl/kubectl/cilium-cli match the pinned versions
+	@have=$$({ $(TALOSCTL) version --client 2>/dev/null || true; } \
+		| sed -n 's/^[[:space:]]*Tag:[[:space:]]*v*//p' | head -1 || true); \
+	[ -n "$$have" ] || { echo "check-tools: cannot run '$(TALOSCTL) version' (set TALOSCTL=/path/to/talosctl)" >&2; exit 1; }; \
+	want=$(TALOS_VERSION:v%=%); \
+	hm=$${have%%.*}; hn=$${have#*.}; hn=$${hn%%.*}; \
+	wm=$${want%%.*}; wn=$${want#*.}; wn=$${wn%%.*}; \
+	if [ "$$hm" -lt "$$wm" ] || { [ "$$hm" -eq "$$wm" ] && [ "$$hn" -lt "$$wn" ]; }; then \
+		echo "check-tools: talosctl v$$have is older than TALOS_VERSION $(TALOS_VERSION);" \
+		     "it cannot parse the Talos 1.14 multi-document patches. Install talosctl >= $(TALOS_VERSION)" \
+		     "(nixpkgs override or release binary) or run make with TALOSCTL=/path/to/talosctl." >&2; \
+		exit 1; \
+	elif [ "$$hm" -ne "$$wm" ] || [ "$$hn" -ne "$$wn" ]; then \
+		echo "check-tools: warning: talosctl v$$have is newer than TALOS_VERSION $(TALOS_VERSION)"; \
+	else \
+		echo "check-tools: talosctl v$$have matches TALOS_VERSION"; \
+	fi
+	@kminor=$$({ $(KUBECTL) version --client -o json 2>/dev/null || true; } \
+		| $(JQ) -r '.clientVersion.minor' 2>/dev/null | tr -dc 0-9 || true); \
+	want=$(KUBERNETES_VERSION); wn=$${want#*.}; wn=$${wn%%.*}; \
+	if [ -z "$$kminor" ]; then echo "check-tools: warning: kubectl not found"; \
+	elif [ $$((kminor - wn)) -gt 1 ] || [ $$((wn - kminor)) -gt 1 ]; then \
+		echo "check-tools: warning: kubectl 1.$$kminor is more than one minor away from Kubernetes $(KUBERNETES_VERSION)"; \
+	else echo "check-tools: kubectl 1.$$kminor is within one minor of Kubernetes $(KUBERNETES_VERSION)"; fi
+	@command -v cilium >/dev/null 2>&1 && echo "check-tools: cilium-cli found" \
+		|| echo "check-tools: warning: cilium-cli not found (needed by make test-e2e)"
 
-disks/worker-2.qcow2: images/talos-arm64-nocloud.qcow2
-	@mkdir -p disks
-	qemu-img create -f qcow2 -b ../images/talos-arm64-nocloud.qcow2 -F qcow2 $@
-	qemu-img resize $@ 20G
-	truncate -s 64M disks/worker-2-vars.fd
+##@ Infrastructure
 
-# Upstream router backs to the Debian base image.
-disks/upstream-router.qcow2: images/debian-12-generic-arm64.qcow2
-	@mkdir -p disks
-	qemu-img create -f qcow2 -b ../images/debian-12-generic-arm64.qcow2 -F qcow2 $@
-	qemu-img resize $@ 20G
-	truncate -s 64M disks/upstream-router-vars.fd
+.PHONY: images vms
+images: $(DEBIAN_IMAGE) $(TALOS_IMAGE) ## Download base VM images (Debian + Talos)
 
-# --- Talos machine config generation ---
+# Debian cloud image for the upstream router.
+$(DEBIAN_IMAGE): | $(IMAGE_DIR)/
+	$(CURL) $(CURL_FLAGS) -o $@ $(DEBIAN_IMAGE_URL)
 
-# Generate base controlplane.yaml, worker.yaml, and talosconfig from patches.
-talos-gen: talos/generated/controlplane.yaml
+# Talos nocloud image: zstd-compressed raw from Image Factory -> raw -> qcow2. Make deletes the
+# intermediates after a successful conversion and does not re-download them while the qcow2 exists.
+.INTERMEDIATE: $(TALOS_RAW_ZST) $(TALOS_RAW)
+$(TALOS_RAW_ZST): | $(IMAGE_DIR)/
+	$(CURL) $(CURL_FLAGS) -o $@ $(TALOS_IMAGE_URL)
+$(TALOS_RAW): $(TALOS_RAW_ZST)
+	$(ZSTD) -d -f $< -o $@
+$(TALOS_IMAGE): $(TALOS_RAW)
+	$(QEMU_IMG) convert -f raw -O qcow2 $< $@
 
-talos/generated/controlplane.yaml:
-	@mkdir -p talos/generated
-	talosctl gen config $(CLUSTER_NAME) $(CLUSTER_ENDPOINT) \
+vms: $(DISKS) $(VARS) ## Create per-node CoW disks and UEFI variable stores
+
+# Each node disk is a CoW overlay on its class's base image. The base image is an order-only
+# prerequisite on purpose: an overlay must never be recreated because a newer base appeared (that
+# destroys the node; Talos upgrades happen in place with 'talosctl upgrade'). After a version
+# bump, 'make images' fetches the new base and 'make clean vms' rebuilds the disks on it.
+$(TALOS_NODES:%=$(DISK_DIR)/%.qcow2):  BASE_IMAGE := $(TALOS_IMAGE)
+$(TALOS_NODES:%=$(DISK_DIR)/%.qcow2):  | $(TALOS_IMAGE)
+$(DEBIAN_NODES:%=$(DISK_DIR)/%.qcow2): BASE_IMAGE := $(DEBIAN_IMAGE)
+$(DEBIAN_NODES:%=$(DISK_DIR)/%.qcow2): | $(DEBIAN_IMAGE)
+
+# qcow2 stores the backing path relative to the overlay, hence ../ (DISK_DIR is one level deep).
+$(DISKS): $(DISK_DIR)/%.qcow2: | $(DISK_DIR)/
+	$(QEMU_IMG) create -f qcow2 -b ../$(BASE_IMAGE) -F qcow2 $@
+	$(QEMU_IMG) resize $@ $(DISK_SIZE)
+
+# Sparse and zero-filled, the same file 'truncate -s' produced before.
+$(VARS): $(DISK_DIR)/%-vars.fd: | $(DISK_DIR)/
+	$(QEMU_IMG) create -f raw $@ $(VARS_SIZE)
+
+# Directory targets carry a trailing slash so they never collide with a phony target of the same
+# name ('images'); make treats 'images/' and 'images' as different targets.
+$(DIRS):
+	mkdir -p $@
+
+##@ Talos config
+
+.PHONY: talos-gen talos-configs
+# check-tools first: an old talosctl cannot parse the multi-document patches.
+talos-gen: check-tools $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) ## Generate base Talos machine configs and talosconfig
+
+# Secrets bundle (PKI, tokens). Generated once and never regenerated automatically: a new bundle
+# is a new PKI, existing nodes stop trusting configs derived from it and talosconfig stops
+# working. 'make clean' keeps it; 'make nuke' removes it. The guard protects a cluster whose
+# configs predate this file: import its PKI instead of minting a new one.
+$(TALOS_SECRETS): | $(TALOS_GEN_DIR)/
+	@if [ -e $(TALOS_GEN_DIR)/controlplane.yaml ]; then \
+		echo "$@ is missing but $(TALOS_GEN_DIR)/controlplane.yaml exists." >&2; \
+		echo "Import the existing PKI first (or 'make nuke' to start over):" >&2; \
+		echo "  $(TALOSCTL) gen secrets --from-controlplane-config \
+$(TALOS_GEN_DIR)/controlplane.yaml -o $@" >&2; \
+		exit 1; \
+	fi
+	$(TALOSCTL) gen secrets --output-file $@
+
+# One talosctl run writes all three files (grouped target). With --with-secrets the output is a
+# pure function of secrets + patches + versions, so it can safely depend on them. --force is
+# required because talosctl refuses to overwrite existing files. --talos-version pins the
+# multi-document layout of the generated config to the pinned Talos release even when a newer
+# talosctl is installed; --install-image pins the installer to TALOS_INSTALLER_IMAGE (the default
+# follows the talosctl client's version). tests/validate-talos.sh mirrors this invocation.
+$(TALOS_BASE_CONFIGS) $(TALOSCONFIG) &: $(TALOS_SECRETS) \
+    $(addprefix $(TALOS_PATCH_DIR)/,common.yaml controlplane.yaml worker.yaml) | $(TALOS_GEN_DIR)/
+	$(TALOSCTL) gen config $(CLUSTER_NAME) $(CLUSTER_ENDPOINT) \
+		--with-secrets $(TALOS_SECRETS) \
+		--talos-version $(TALOS_VERSION) \
 		--kubernetes-version $(KUBERNETES_VERSION) \
-		--output-dir talos/generated \
-		--config-patch @talos/patches/common.yaml \
-		--config-patch-control-plane @talos/patches/controlplane.yaml \
-		--config-patch-worker @talos/patches/worker.yaml
-	@# Patch talosconfig endpoints for QEMU NAT: the host reaches the Talos API
-	@# through port-forwarded 127.0.0.1:50000 (maps to control-plane-1:50000).
-	@# After bootstrap, talosctl proxies requests to workers through the control plane.
-	@# Uses 127.0.0.1 (not localhost) to avoid IPv6 resolution issues.
-	talosctl config endpoint 127.0.0.1:50000 --talosconfig $(TALOSCONFIG)
-	talosctl config node $(MGMT_CP_IP) --talosconfig $(TALOSCONFIG)
+		--install-image $(TALOS_INSTALLER_IMAGE) \
+		-o $(TALOS_GEN_DIR) --force \
+		--config-patch @$(TALOS_PATCH_DIR)/common.yaml \
+		--config-patch-control-plane @$(TALOS_PATCH_DIR)/controlplane.yaml \
+		--config-patch-worker @$(TALOS_PATCH_DIR)/worker.yaml
+	@# talosconfig endpoint for QEMU NAT: the host reaches the Talos API through the forwarded
+	@# 127.0.0.1:50000 (control-plane-1); after bootstrap talosctl proxies requests to workers
+	@# through it. 127.0.0.1 rather than localhost avoids IPv6 resolution surprises.
+	$(TALOSCTL) config endpoint 127.0.0.1:$(TALOS_API_PORT)
+	$(TALOSCTL) config node $(IP_MGMT_control-plane-1)
 
-# Merge per-node patches (hostname, MACs, IPs) into the base configs.
-talos-configs: talos/generated/control-plane-1.yaml talos/generated/worker-1.yaml talos/generated/worker-2.yaml
+talos-configs: $(TALOS_NODE_CONFIGS) ## Patch per-node identity (MACs, IPs, hostname) into node configs
 
-talos/generated/control-plane-1.yaml: talos/generated/controlplane.yaml talos/patches/control-plane-1.yaml
-	talosctl machineconfig patch $< --patch @talos/patches/control-plane-1.yaml --output $@
+# Control-plane nodes derive from controlplane.yaml, workers from worker.yaml. $(filter) picks the
+# base and the patch out of $^ so the order of the prerequisite lines does not matter.
+$(TALOS_CP_NODES:%=$(TALOS_GEN_DIR)/%.yaml):     $(TALOS_GEN_DIR)/controlplane.yaml
+$(TALOS_WORKER_NODES:%=$(TALOS_GEN_DIR)/%.yaml): $(TALOS_GEN_DIR)/worker.yaml
+$(TALOS_NODE_CONFIGS): $(TALOS_GEN_DIR)/%.yaml: $(TALOS_PATCH_DIR)/%.yaml
+	$(TALOSCTL) machineconfig patch $(filter $(TALOS_GEN_DIR)/%,$^) \
+		--patch @$(filter $(TALOS_PATCH_DIR)/%,$^) --output $@
 
-talos/generated/worker-1.yaml: talos/generated/worker.yaml talos/patches/worker-1.yaml
-	talosctl machineconfig patch $< --patch @talos/patches/worker-1.yaml --output $@
+##@ Seed ISOs
 
-talos/generated/worker-2.yaml: talos/generated/worker.yaml talos/patches/worker-2.yaml
-	talosctl machineconfig patch $< --patch @talos/patches/worker-2.yaml --output $@
+.PHONY: seed talos-seed cloud-init
+seed: talos-seed cloud-init ## Build all seed ISOs (Talos + cloud-init)
+talos-seed: $(TALOS_SEEDS) ## Build CIDATA ISOs for Talos nodes (machine config as user-data)
+cloud-init: $(CLOUD_INIT_SEED) ## Build the cloud-init seed ISO for upstream-router
 
-# --- Seed ISOs ---
+# The per-node HostnameConfig has priority; the nocloud meta-data local-hostname is a fallback.
+$(TALOS_META_DATA): $(TALOS_GEN_DIR)/%.meta-data: | $(TALOS_GEN_DIR)/
+	printf '{"instance-id": "%s", "local-hostname": "%s"}\n' $* $* > $@
 
-# Talos nodes: machine config delivered as user-data on a CIDATA ISO.
-# Talos machined (not cloud-init) reads this at first boot.
-talos-seed: $(foreach node,$(TALOS_NODES),talos/generated/$(node)-seed.iso)
-
-talos/generated/%-seed.iso: talos/generated/%.yaml
-	@echo "Generating Talos seed ISO for $*..."
-	@mkdir -p /tmp/talos-cidata-$*
-	@cp $< /tmp/talos-cidata-$*/user-data
-	@echo '{"instance-id": "$*", "local-hostname": "$*"}' > /tmp/talos-cidata-$*/meta-data
-	mkisofs -output $@ -volid cidata -joliet -rock /tmp/talos-cidata-$*/
-	@rm -rf /tmp/talos-cidata-$*
+# Talos machined (not cloud-init) reads the machine config as user-data from a CIDATA volume.
+# -graft-points stores each source under the name the guest expects: no staging directory.
+$(TALOS_SEEDS): $(TALOS_GEN_DIR)/%-seed.iso: $(TALOS_GEN_DIR)/%.yaml $(TALOS_GEN_DIR)/%.meta-data
+	$(MKISOFS) -output $@ -volid cidata -joliet -rock -graft-points \
+		user-data=$(filter %.yaml,$^) meta-data=$(filter %.meta-data,$^)
 
 # Upstream router: standard cloud-init seed ISO (Debian).
-cloud-init: cloud-init/upstream-router/seed.iso
+$(CLOUD_INIT_SEED): $(addprefix $(CLOUD_INIT_DIR)/upstream-router/,user-data meta-data network-config)
+	$(MKISOFS) -output $@ -volid cidata -joliet -rock $^
 
-cloud-init/upstream-router/seed.iso: cloud-init/upstream-router/user-data cloud-init/upstream-router/meta-data cloud-init/upstream-router/network-config
-	@echo "Generating cloud-init ISO for upstream-router..."
-	mkisofs -output $@ -volid cidata -joliet -rock \
-		cloud-init/upstream-router/user-data cloud-init/upstream-router/meta-data cloud-init/upstream-router/network-config
+##@ VM lifecycle
 
-# Umbrella target for all seed ISOs.
-seed: talos-seed cloud-init
+.PHONY: vde-up vde-down
+vde-up: $(VDE_PID) ## Start the VDE switch (internal L2 segment)
+	@kill -0 "$$(cat $<)" 2>/dev/null \
+		|| { echo "vde: stale pidfile $<, run 'make vde-down' and retry" >&2; exit 1; }
 
-# --- Start VMs ---
-#
-# Two NICs per VM:
-#   mgmt (user-mode NAT): host SSH/API/talosctl access via port forwarding.
-#   internal (VDE switch): shared L2 segment for inter-VM traffic (BGP, pods).
-# Stable MAC addresses let Talos/cloud-init bind NICs deterministically.
+# vde_switch daemonizes with daemon(3); the parent may return before the control socket exists,
+# so wait briefly for it before any VM tries to connect.
+$(VDE_PID): | $(RUN_DIR)/
+	@echo "Starting VDE switch..."
+	$(VDE_SWITCH) --sock $(VDE_CTL) --mode 700 --daemon --pidfile $@
+	@for i in 1 2 3 4 5 6 7 8 9 10; do [ -S $(VDE_CTL)/ctl ] && exit 0; sleep 0.2; done; \
+		echo "vde: $(VDE_CTL)/ctl did not appear" >&2; kill "$$(cat $@)" 2>/dev/null || true; exit 1
 
-# Start VDE virtual switch before any VM. Provides the internal L2 segment.
-vde-up:
-	@if [ ! -S $(VDE_SOCK)/ctl ]; then \
-		echo "Starting VDE switch..."; \
-		$(VDE_SWITCH) -sock $(VDE_SOCK) -daemon -mod 700; \
-	else \
-		echo "VDE switch already running"; \
+.PHONY: up $(NODES:%=up-%)
+up: $(DEBIAN_NODES:%=up-%) $(TALOS_NODES:%=up-%) ## Start the VDE switch and all VMs (no-op for VMs already running)
+
+# The pidfile is the artifact: a running VM makes its up-<node> a no-op, a failed launch leaves no
+# pidfile (.DELETE_ON_ERROR), and 'make -j up' is safe because the switch is an order-only
+# prerequisite of every VM. The alias only checks that the pid is alive.
+$(NODES:%=up-%): up-%: $(RUN_DIR)/%.pid ## Start one VM (up-<node>)
+	@kill -0 "$$(cat $<)" 2>/dev/null && echo "$*: running (PID $$(cat $<))" \
+		|| { echo "$*: stale pidfile $<, run 'make down-$*' and retry" >&2; exit 1; }
+
+# Class-specific prerequisites and flags. Static pattern rules mention every pidfile and seed ISO
+# explicitly, which restricts the rule to known nodes and keeps make from treating the files as
+# deletable intermediates.
+$(TALOS_NODES:%=$(RUN_DIR)/%.pid):  $(RUN_DIR)/%.pid: | $(TALOS_GEN_DIR)/%-seed.iso
+$(DEBIAN_NODES:%=$(RUN_DIR)/%.pid): $(RUN_DIR)/%.pid: | $(CLOUD_INIT_DIR)/%/seed.iso
+# Talos v1.12+ boots via systemd-stub, which takes the console from SMBIOS, not the kernel cmdline.
+$(TALOS_NODES:%=$(RUN_DIR)/%.pid):  SMBIOS := -smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0
+$(DEBIAN_NODES:%=$(RUN_DIR)/%.pid): SMBIOS :=
+
+# Every prerequisite is order-only on purpose: a running VM keeps writing its disk and UEFI
+# variable store, so a timestamp dependency would try to relaunch a live VM.
+$(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN_DIR)/ $(VDE_PID)
+	@echo "Starting $*..."
+	$(QEMU) \
+		-name $* \
+		-machine virt,gic-version=max,accel=hvf \
+		-cpu max -smp $(SMP_$*) -m $(MEM_$*) \
+		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
+		-drive file=$(DISK_DIR)/$*-vars.fd,format=raw,if=pflash \
+		-drive file=$(DISK_DIR)/$*.qcow2,if=virtio,format=qcow2 \
+		-drive file=$(filter %.iso,$|),if=virtio,format=raw \
+		-device virtio-rng-pci \
+		$(SMBIOS) \
+		-netdev user,id=mgmt,net=$(MGMT_NET),$(HOSTFWD_$*) \
+		-device virtio-net-pci,netdev=mgmt,mac=$(MAC_MGMT_$*) \
+		-netdev vde,id=internal,sock=$(VDE_CTL) \
+		-device virtio-net-pci,netdev=internal,mac=$(MAC_INTERNAL_$*) \
+		-pidfile $@ \
+		-daemonize -display none \
+		-chardev socket,id=console,path=$(RUN_DIR)/$*.sock,server=on,wait=off \
+		-serial chardev:console
+
+.PHONY: down $(NODES:%=down-%)
+down: vde-down ## Stop all VMs (SIGTERM = power off), then the VDE switch
+
+$(NODES:%=down-%): down-%: ## Stop one VM (down-<node>); also clears a stale pidfile and socket
+	@if [ -f $(RUN_DIR)/$*.pid ]; then \
+		echo "Stopping $*..."; kill "$$(cat $(RUN_DIR)/$*.pid)" 2>/dev/null || true; \
 	fi
+	@rm -f $(RUN_DIR)/$*.pid $(RUN_DIR)/$*.sock
 
-up: vde-up up-upstream up-control-plane-1 up-worker-1 up-worker-2
-
-up-control-plane-1: disks/control-plane-1.qcow2 talos/generated/control-plane-1-seed.iso
-	@echo "Starting control-plane-1 (Talos)..."
-	$(QEMU) \
-		-name control-plane-1 \
-		-machine virt,gic-version=max,accel=hvf \
-		-cpu max -smp 2 -m 4G \
-		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
-		-drive file=disks/control-plane-1-vars.fd,format=raw,if=pflash \
-		-drive file=disks/control-plane-1.qcow2,if=virtio,format=qcow2 \
-		-drive file=talos/generated/control-plane-1-seed.iso,if=virtio,format=raw \
-		-device virtio-rng-pci \
-		-smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0 \
-		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50000-$(MGMT_CP_IP):50000,hostfwd=tcp::6443-$(MGMT_CP_IP):6443 \
-		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:01 \
-		-netdev vde,id=internal,sock=$(VDE_SOCK) \
-		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:01 \
-		-pidfile /tmp/qemu-control-plane-1.pid \
-		-daemonize -display none \
-		-chardev socket,id=console,path=/tmp/qemu-control-plane-1.sock,server=on,wait=off \
-		-serial chardev:console
-
-up-worker-1: disks/worker-1.qcow2 talos/generated/worker-1-seed.iso
-	@echo "Starting worker-1 (Talos)..."
-	$(QEMU) \
-		-name worker-1 \
-		-machine virt,gic-version=max,accel=hvf \
-		-cpu max -smp 2 -m 4G \
-		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
-		-drive file=disks/worker-1-vars.fd,format=raw,if=pflash \
-		-drive file=disks/worker-1.qcow2,if=virtio,format=qcow2 \
-		-drive file=talos/generated/worker-1-seed.iso,if=virtio,format=raw \
-		-device virtio-rng-pci \
-		-smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0 \
-		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50001-$(MGMT_W1_IP):50000 \
-		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:02 \
-		-netdev vde,id=internal,sock=$(VDE_SOCK) \
-		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:02 \
-		-pidfile /tmp/qemu-worker-1.pid \
-		-daemonize -display none \
-		-chardev socket,id=console,path=/tmp/qemu-worker-1.sock,server=on,wait=off \
-		-serial chardev:console
-
-up-worker-2: disks/worker-2.qcow2 talos/generated/worker-2-seed.iso
-	@echo "Starting worker-2 (Talos)..."
-	$(QEMU) \
-		-name worker-2 \
-		-machine virt,gic-version=max,accel=hvf \
-		-cpu max -smp 2 -m 4G \
-		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
-		-drive file=disks/worker-2-vars.fd,format=raw,if=pflash \
-		-drive file=disks/worker-2.qcow2,if=virtio,format=qcow2 \
-		-drive file=talos/generated/worker-2-seed.iso,if=virtio,format=raw \
-		-device virtio-rng-pci \
-		-smbios type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0 \
-		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::50002-$(MGMT_W2_IP):50000 \
-		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:03 \
-		-netdev vde,id=internal,sock=$(VDE_SOCK) \
-		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:03 \
-		-pidfile /tmp/qemu-worker-2.pid \
-		-daemonize -display none \
-		-chardev socket,id=console,path=/tmp/qemu-worker-2.sock,server=on,wait=off \
-		-serial chardev:console
-
-up-upstream: disks/upstream-router.qcow2 cloud-init/upstream-router/seed.iso
-	@echo "Starting upstream-router (Debian)..."
-	$(QEMU) \
-		-name upstream-router \
-		-machine virt,gic-version=max,accel=hvf \
-		-cpu max -smp 1 -m 512M \
-		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
-		-drive file=disks/upstream-router-vars.fd,format=raw,if=pflash \
-		-drive file=disks/upstream-router.qcow2,if=virtio,format=qcow2 \
-		-drive file=cloud-init/upstream-router/seed.iso,if=virtio,format=raw \
-		-device virtio-rng-pci \
-		-netdev user,id=mgmt,net=$(MGMT_NET),hostfwd=tcp::2200-$(MGMT_UPSTREAM_IP):22 \
-		-device virtio-net-pci,netdev=mgmt,mac=52:54:00:00:01:00 \
-		-netdev vde,id=internal,sock=$(VDE_SOCK) \
-		-device virtio-net-pci,netdev=internal,mac=52:54:00:00:02:00 \
-		-pidfile /tmp/qemu-upstream-router.pid \
-		-daemonize -display none \
-		-serial unix:/tmp/qemu-upstream-router.sock,server,nowait
-
-# --- Stop VMs ---
-
-down:
-	@for node in $(NODES); do \
-		if [ -f /tmp/qemu-$$node.pid ]; then \
-			echo "Stopping $$node..."; \
-			kill $$(cat /tmp/qemu-$$node.pid) 2>/dev/null || true; \
-			rm -f /tmp/qemu-$$node.pid /tmp/qemu-$$node.sock; \
-		fi \
-	done
-	@if [ -S $(VDE_SOCK)/ctl ]; then \
-		echo "Stopping VDE switch..."; \
-		kill $$(lsof -t $(VDE_SOCK)/ctl 2>/dev/null) 2>/dev/null || true; \
-		rm -rf $(VDE_SOCK); \
+vde-down: $(NODES:%=down-%) ## Stop the VDE switch (after all VMs)
+	@if [ -f $(VDE_PID) ]; then \
+		echo "Stopping VDE switch..."; kill "$$(cat $(VDE_PID))" 2>/dev/null || true; \
 	fi
+	@rm -rf $(VDE_PID) $(VDE_CTL)
 
-# --- VM status ---
-
-status:
-	@for node in $(NODES); do \
-		if [ -f /tmp/qemu-$$node.pid ] && kill -0 $$(cat /tmp/qemu-$$node.pid) 2>/dev/null; then \
-			echo "$$node: running (PID $$(cat /tmp/qemu-$$node.pid))"; \
-		else \
-			echo "$$node: stopped"; \
-		fi \
+.PHONY: status
+status: ## Show VM and VDE switch state (running / stopped / stale pidfile)
+	@for name in $(NODES) vde; do \
+		pidfile=$(RUN_DIR)/$$name.pid; \
+		if [ ! -f "$$pidfile" ]; then echo "$$name: stopped"; \
+		elif kill -0 "$$(cat "$$pidfile")" 2>/dev/null; then \
+			echo "$$name: running (PID $$(cat "$$pidfile"))"; \
+		else echo "$$name: stale pidfile ($$pidfile)"; fi; \
 	done
 
-# --- Cluster lifecycle ---
+##@ Cluster lifecycle
 
-# Initialize etcd and the Kubernetes control plane. Run once on first setup.
-# Endpoint (127.0.0.1:50000) and default node are set in talosconfig.
-bootstrap:
-	TALOSCONFIG=$(TALOSCONFIG) talosctl bootstrap
+.PHONY: bootstrap kubeconfig cilium-install frr-rr cilium-bgp
+# Initialize etcd and the Kubernetes control plane. Run once on first setup. Endpoint
+# (127.0.0.1:50000) and default node are set in talosconfig.
+bootstrap: $(TALOSCONFIG) ## Bootstrap etcd + control plane (once)
+	$(TALOSCTL) bootstrap
 
-# Fetch kubeconfig into a temp file, rewrite the API server endpoint to the
-# host-accessible port forward, then merge into the default kubeconfig.
-# Safe for multi-cluster setups: only the k8s-lab context is added/updated.
-kubeconfig:
-	TALOSCONFIG=$(TALOSCONFIG) talosctl kubeconfig talos/generated/kubeconfig --force
-	kubectl config set-cluster k8s-lab --server=https://127.0.0.1:6443 \
-		--kubeconfig talos/generated/kubeconfig
-	KUBECONFIG=talos/generated/kubeconfig:$$HOME/.kube/config \
-		kubectl config view --flatten > $$HOME/.kube/config.tmp
+# Fetch kubeconfig into a file, rewrite the API server endpoint to the host-accessible port
+# forward, then merge into the default kubeconfig. Safe for multi-cluster setups: only the
+# $(CLUSTER_NAME) context is added or updated.
+kubeconfig: $(TALOSCONFIG) ## Retrieve kubeconfig from Talos and merge it into ~/.kube/config
+	$(TALOSCTL) kubeconfig $(KUBECONFIG_FILE) --force
+	$(KUBECTL) config set-cluster $(CLUSTER_NAME) --server=https://127.0.0.1:$(K8S_API_PORT) \
+		--kubeconfig $(KUBECONFIG_FILE)
+	KUBECONFIG=$(KUBECONFIG_FILE):$$HOME/.kube/config \
+		$(KUBECTL) config view --flatten > $$HOME/.kube/config.tmp
 	mv $$HOME/.kube/config.tmp $$HOME/.kube/config
-	kubectl config use-context admin@k8s-lab
-	@echo "Merged k8s-lab context into ~/.kube/config"
+	$(KUBECTL) config use-context admin@$(CLUSTER_NAME)
+	@echo "Merged $(CLUSTER_NAME) context into ~/.kube/config"
 
-# Install Cilium CNI with eBPF datapath, kube-proxy replacement, and BGP.
-cilium-install:
-	helm repo add cilium https://helm.cilium.io/ 2>/dev/null || true
-	helm repo update
-	helm install cilium cilium/cilium \
+# Cilium CNI with eBPF datapath, kube-proxy replacement, and BGP. 'upgrade --install' is
+# idempotent: re-running applies value changes instead of failing on an existing release.
+cilium-install: ## Install or upgrade Cilium CNI via Helm
+	$(HELM) repo add cilium https://helm.cilium.io/ 2>/dev/null || true
+	$(HELM) repo update
+	$(HELM) upgrade --install cilium cilium/cilium \
 		--version $(CILIUM_VERSION) \
 		--namespace kube-system \
-		-f manifests/cilium-values.yaml
+		-f $(MANIFEST_DIR)/cilium-values.yaml
 
-# Deploy FRR as a privileged pod on control-plane-1 for BGP route reflection.
-# Uses hostNetwork — no CNI dependency. Peers with upstream-router (eBGP) and
-# workers (iBGP).
-frr-rr:
-	kubectl apply -f manifests/frr-route-reflector.yaml
+# FRR as a privileged pod on control-plane-1 for BGP route reflection. Uses hostNetwork - no CNI
+# dependency. Peers with upstream-router (eBGP) and workers (iBGP).
+frr-rr: ## Deploy the FRR Route Reflector pod on control-plane-1
+	$(KUBECTL) apply -f $(MANIFEST_DIR)/frr-route-reflector.yaml
 
-# Configure Cilium BGP on worker nodes: iBGP peering with the FRR Route
-# Reflector on control-plane-1.
-cilium-bgp:
-	kubectl apply -f manifests/cilium-bgp.yaml
+# Cilium BGP on worker nodes: iBGP peering with the FRR Route Reflector on control-plane-1.
+cilium-bgp: ## Apply Cilium iBGP peering CRDs for workers
+	$(KUBECTL) apply -f $(MANIFEST_DIR)/cilium-bgp.yaml
 
-# --- Access & debugging ---
+##@ Tests
 
-# SSH to upstream router (only Debian VM; Talos nodes have no SSH).
-ssh-upstream:
-	ssh -p 2200 k8s@localhost
+# lint is offline. validate needs network (Cilium chart, JSON schemas, FRR container image) and a
+# running container runtime (docker or podman) for the FRR dry-run. test-e2e needs the lab up and
+# bootstrapped. CI runs 'make test' on every push.
+.PHONY: lint validate test test-e2e
+lint: ## Lint YAML, Markdown, shell scripts, workflows (offline)
+	$(TEST_DIR)/lint.sh
 
-# Serial console via QEMU Unix socket. Works for all VMs including Talos
-# (shows boot messages, maintenance mode prompts).
-console-%:
-	socat -,raw,echo=0 unix-connect:/tmp/qemu-$*.sock
+validate: ## Validate Talos configs, manifests, FRR and cloud-init (needs network)
+	$(TEST_DIR)/validate-talos.sh
+	$(TEST_DIR)/validate-manifests.sh
+	$(TEST_DIR)/validate-frr.sh
+	$(TEST_DIR)/validate-cloud-init.sh
+	$(TEST_DIR)/check-versions.sh
 
-# Interactive Talos dashboard across all Kubernetes nodes.
-# After bootstrap, the control plane proxies requests to workers.
-talos-dashboard:
-	TALOSCONFIG=$(TALOSCONFIG) talosctl dashboard \
-		-n $(MGMT_CP_IP),fd00:100::11,fd00:100::12
+test: lint validate ## lint + validate (what CI runs on every push)
 
-# Verify cluster health: etcd, kubelet, and node readiness.
-# Worker IPs use the internal network (fd00:100::/64) since SLIRP IPs are
-# per-VM isolated NAT — the control plane can only reach workers via VDE.
-talos-health:
-	TALOSCONFIG=$(TALOSCONFIG) talosctl health \
-		--control-plane-nodes fd00:100::10 \
-		--worker-nodes fd00:100::11,fd00:100::12
+test-e2e: ## End-to-end checks against the running lab
+	$(TEST_DIR)/e2e.sh
 
-# --- Cleanup ---
+##@ Access and debugging
 
-clean:
-	rm -rf disks/ cloud-init/upstream-router/seed.iso talos/generated/
+.PHONY: ssh-upstream talos-dashboard talos-health $(NODES:%=console-%)
+# Only the Debian VM has SSH; Talos nodes have no sshd.
+ssh-upstream: ## SSH to the upstream router (Debian)
+	ssh -p $(SSH_PORT) $(SSH_USER)@localhost
 
-nuke: clean
-	rm -rf images/
+# Serial console via the QEMU unix socket. Works for all VMs including Talos (boot messages,
+# maintenance mode prompts).
+$(NODES:%=console-%): console-%: ## Serial console via QEMU socket (console-<node>)
+	$(SOCAT) -,raw,echo=0 unix-connect:$(RUN_DIR)/$*.sock
+
+# After bootstrap, the control plane proxies requests to the workers.
+talos-dashboard: $(TALOSCONFIG) ## Interactive Talos TUI dashboard across all Kubernetes nodes
+	$(TALOSCTL) dashboard -n $(call join-comma,$(IP_MGMT_control-plane-1) $(WORKER_INTERNAL_IPS))
+
+# Worker IPs use the internal network (fd00:100::/64): SLIRP IPs are per-VM isolated NAT, so the
+# control plane can only reach workers via VDE.
+talos-health: $(TALOSCONFIG) ## Check cluster health (etcd, kubelet, node readiness)
+	$(TALOSCTL) health \
+		--control-plane-nodes $(call join-comma,$(CP_INTERNAL_IPS)) \
+		--worker-nodes $(call join-comma,$(WORKER_INTERNAL_IPS))
+
+##@ Cleanup
+
+.PHONY: clean nuke
+# Stops the VMs first (their disks are about to go). Keeps the base images and secrets.yaml:
+# rebuilding on the same PKI is harmless and saves a download. The cloud-init glob also removes
+# seed ISOs left over from the pre-Talos layout.
+clean: down ## Remove disks, generated configs, seed ISOs and kubeconfig (keeps images, secrets)
+	rm -rf $(DISK_DIR)
+	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_NODE_CONFIGS) $(TALOS_META_DATA) \
+		$(TALOS_SEEDS) $(KUBECONFIG_FILE) $(CLOUD_INIT_DIR)/*/seed.iso
+
+nuke: clean ## Remove everything including base images and the Talos secrets bundle (new PKI)
+	rm -rf $(IMAGE_DIR) $(TALOS_GEN_DIR)

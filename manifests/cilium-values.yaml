@@ -1,3 +1,5 @@
+# Cilium Helm values for the Talos lab. Rendered against the pinned chart (CILIUM_VERSION in
+# the Makefile) and schema-checked by `make validate`; no key changes were needed for 1.20.
 ipam:
   mode: kubernetes
 

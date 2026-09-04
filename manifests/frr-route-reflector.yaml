@@ -2,6 +2,11 @@
 # Runs with hostNetwork so it binds to the node's real interfaces and does not
 # depend on CNI. Peers with upstream-router (eBGP, AS 64513) and worker nodes
 # (iBGP clients, AS 64512) via Cilium BGP.
+#
+# The `frr version` header pins the version-gated config defaults and must track the image
+# minor (tests/check-versions.sh enforces both against FRR_VERSION in the Makefile). Note
+# that FRR >= 10.5 rejects AS_SET paths by default (bgp reject-as-sets), independent of the
+# header; the lab originates no AS_SETs so this has no effect here.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -30,7 +35,7 @@ data:
   vtysh.conf: |
     service integrated-vtysh-config
   frr.conf: |
-    frr version 10.4
+    frr version 10.7
     frr defaults traditional
     hostname control-plane-1
     log syslog informational
@@ -102,7 +107,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: frr
-          image: quay.io/frrouting/frr:10.4.4
+          image: quay.io/frrouting/frr:10.7.1
           securityContext:
             capabilities:
               add:

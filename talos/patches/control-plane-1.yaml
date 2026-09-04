@@ -1,21 +1,53 @@
-machine:
-  network:
-    interfaces:
-      - deviceSelector:
-          hardwareAddr: "52:54:00:00:01:01"
-        addresses:
-          - 192.168.100.10/24
-        routes:
-          - network: 0.0.0.0/0
-            gateway: 192.168.100.2
-        dhcp: false
-      - deviceSelector:
-          hardwareAddr: "52:54:00:00:02:01"
-        addresses:
-          - fd00:100::10/64
-          - 10.100.0.10/24
-        dhcp: false
-    nameservers:
-      - 192.168.100.3
-  nodeLabels:
-    node-role.kubernetes.io/route-reflector: ""
+# Per-node identity for control-plane-1: NIC aliases bound by MAC (equivalent to cloud-init's
+# match.macaddress), static addresses, static hostname. Configuring any link explicitly
+# disables Talos' default DHCP on all links, so no DHCP document is needed.
+apiVersion: v1alpha1
+kind: LinkAliasConfig
+name: mgmt0
+selector:
+  match: glob("52:54:00:00:01:01", mac(link.permanent_addr))
+---
+apiVersion: v1alpha1
+kind: LinkAliasConfig
+name: int0
+selector:
+  match: glob("52:54:00:00:02:01", mac(link.permanent_addr))
+---
+# Management NIC (QEMU user-mode NAT): host access via port forwarding.
+apiVersion: v1alpha1
+kind: LinkConfig
+name: mgmt0
+addresses:
+  - address: 192.168.100.10/24
+routes:
+  # No destination = default route for the gateway's address family.
+  - gateway: 192.168.100.2
+---
+# Internal NIC (VDE switch): shared L2 segment for inter-VM traffic (BGP, pods).
+# IPv6 primary, IPv4 secondary (required by Cilium's datapath).
+apiVersion: v1alpha1
+kind: LinkConfig
+name: int0
+addresses:
+  - address: fd00:100::10/64
+  - address: 10.100.0.10/24
+---
+apiVersion: v1alpha1
+kind: ResolverConfig
+nameservers:
+  - address: 192.168.100.3
+---
+# Static hostname (highest priority source). The nocloud meta-data local-hostname written
+# by the seed ISO recipe stays as a fallback. The generated `auto: stable` is removed
+# because it is mutually exclusive with `hostname`.
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: control-plane-1
+auto:
+  $patch: delete
+---
+# Merged into the generated control-plane KubeNodeConfig labels (maps merge).
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+labels:
+  node-role.kubernetes.io/route-reflector: ""

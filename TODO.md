@@ -9,3 +9,10 @@
 - [ ] **Disaster recovery**: Practice etcd backup/restore via talosctl
 - [ ] **Explore Talos system extensions**: Custom images via Image Factory
 - [ ] **Dual Route Reflectors**: Add second RR for HA (production alignment)
+- [ ] **Talos native BGP**: Evaluate Talos 1.14's `BGPInstanceConfig` (embedded
+  GoBGP) as a replacement for the FRR Route Reflector pod
+- [ ] **Workload isolation**: Talos 1.14 enables `SecurityProfileConfig
+  workloadIsolation` for new clusters; confirm Cilium and the hostNetwork FRR
+  pod behave under it, or pin it to `false`
+- [ ] **CI e2e tier**: Talos-in-Docker smoke job on `ubuntu-latest`, and a
+  self-hosted Apple Silicon runner for `make test-e2e`

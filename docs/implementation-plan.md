@@ -55,6 +55,14 @@ All dependencies managed via **Nix Flakes**:
 }
 ```
 
+The Makefile needs GNU Make >= 4 (`gnumake` from Nix; the macOS system `make`
+3.81 exits with a hint) plus `vde2` and `zstd`. `talosctl` must be at least
+`TALOS_VERSION` (1.14): the machine config patches use Talos 1.14
+multi-document kinds that older clients cannot parse (`make check-tools`
+verifies this). The test harness (`make test`) also uses
+`yamllint`, `rumdl`, `shellcheck`, `actionlint`, `kubeconform`, `yq`, `jq`
+and a container runtime (`podman`) for the FRR dry-run.
+
 UEFI firmware: QEMU bundles EDK2 (OSS implementation of UEFI) firmware at
 `$(nix build nixpkgs#qemu --print-out-paths --no-link)/share/qemu/edk2-aarch64-code.fd`
 
@@ -75,7 +83,7 @@ Rationale:
 - Eliminates manual post-boot configuration (swap, kernel modules, kubeadm)
 - Reproducible: same config always produces the same node state
 
-**Debian 12 Bookworm** (upstream-router only)
+**Debian 13 Trixie** (upstream-router only)
 
 Rationale:
 
@@ -83,13 +91,15 @@ Rationale:
   a general-purpose OS with a package manager
 - Talos cannot run arbitrary daemons outside Kubernetes
 - Lightweight cloud image, native aarch64 support
+- FRR (10.3 in trixie) is installed and configured by cloud-init at first
+  boot, so the router needs no manual setup
 
 ### 1.4 Image Variants
 
 | Image | Source | Nodes |
 |---|---|---|
-| `talos-arm64-nocloud.qcow2` | Talos Image Factory, converted from raw | control-plane-1, worker-1, worker-2 |
-| `debian-12-generic-arm64.qcow2` | cloud.debian.org | upstream-router |
+| `talos-<version>-nocloud-arm64.qcow2` | Talos Image Factory, converted from raw | control-plane-1, worker-1, worker-2 |
+| `debian-13-generic-arm64.qcow2` | cloud.debian.org | upstream-router |
 
 The Talos `nocloud` variant reads machine config from a CIDATA ISO at boot.
 This uses the same physical delivery mechanism (ISO volume labeled `cidata`)
@@ -111,7 +121,7 @@ entirely different:
 
 | Node            | vCPU | RAM   | Disk | NICs | OS    |
 |-----------------|------|-------|------|------|-------|
-| upstream-router | 1    | 512MB | 20GB | 2    | Debian 12 |
+| upstream-router | 1    | 512MB | 20GB | 2    | Debian 13 |
 | control-plane-1 | 2    | 4GB   | 20GB | 2    | Talos |
 | worker-1        | 2    | 4GB   | 20GB | 2    | Talos |
 | worker-2        | 2    | 4GB   | 20GB | 2    | Talos |
@@ -149,12 +159,20 @@ make vms
 ```
 
 Creates per-node CoW (copy-on-write) disks backed by the appropriate base
-image. Talos nodes back to `talos-arm64-nocloud.qcow2`, upstream-router backs
-to `debian-12-generic-arm64.qcow2`. Each disk is resized to 20G.
+image. Talos nodes back to `talos-<version>-nocloud-arm64.qcow2` (the file
+name carries `TALOS_VERSION`, so a bump downloads a new image), upstream-router
+backs to `debian-13-generic-arm64.qcow2`. Each disk is resized to 20G. Disks
+are never recreated automatically: after a Talos bump run `make clean vms`.
 
 #### Step 2.2.3: Generate Talos Machine Configs
 
-Talos machine config is a single YAML document declaring the entire node state.
+Talos machine config is a stream of YAML documents declaring the entire node
+state. Since Talos 1.14, `talosctl gen config` emits a multi-document config:
+a small `v1alpha1` document (secrets, certSANs, etcd) plus one document per
+concern (`KubeNetworkConfig`, `KubeNodeConfig`, `KubeAPIServerConfig`,
+`LinkConfig`, ...). Patch documents are matched by kind (and name) and merged;
+the legacy `cluster.network`, `cluster.proxy`, `machine.kubelet.nodeIP` and
+similar fields conflict with the new documents and are no longer used.
 Configs are generated in two steps: base generation + per-node patching.
 
 ```bash
@@ -167,23 +185,44 @@ make talos-configs
 
 Patch files are stored in `talos/patches/`:
 
-- `common.yaml` — shared: kernel modules, sysctls, cluster CIDRs, CNI=none,
-  kube-proxy=disabled, `machine.certSANs` includes `127.0.0.1` and `localhost`
-  (required for talosctl access through QEMU NAT port forwarding),
-  `kubelet.nodeIP.validSubnets: [fd00:100::/64, 10.100.0.0/24]` (forces
-  kubelet to register with internal VDE network addresses — IPv6 primary, IPv4
-  secondary for Cilium native routing datapath)
-- `controlplane.yaml` — scheduler, controller-manager, API server bind
-  addresses, API server certSANs for all access paths,
-  `etcd.advertisedSubnets: [fd00:100::/64]` (etcd must advertise on the
-  internal network — default SLIRP addresses are per-VM isolated NAT)
-- `worker.yaml` — worker-specific labels
-- `control-plane-1.yaml` — MAC-based NIC matching, static IPs
-- `worker-1.yaml`, `worker-2.yaml` — same pattern per node
+- `common.yaml` - shared: `machine.certSANs` includes `127.0.0.1` and
+  `localhost` (required for talosctl access through QEMU NAT port forwarding);
+  `KernelModuleConfig` (br_netfilter), `SysctlConfig` (forwarding, bridge-nf),
+  `TimeSyncConfig` (plain NTP, no NTS), one `RegistryTLSConfig` per registry;
+  `KubeNodeConfig.nodeIP.validSubnets: [fd00:100::/64, 10.100.0.0/24]` (forces
+  kubelet to register with internal VDE network addresses - IPv6 primary, IPv4
+  secondary for Cilium native routing datapath); `KubeNetworkConfig` with the
+  IPv6-first pod/service subnets and explicit per-node mask sizes; the
+  generated `DiscoveryServiceConfig` is deleted (discovery off)
+- `controlplane.yaml` - `KubeAPIServerConfig` (bind address, `certExtraSANs`
+  for all access paths), `KubeControllerManagerConfig` / `KubeSchedulerConfig`
+  bind addresses, `cluster.etcd.advertisedSubnets: [fd00:100::/64]` (etcd must
+  advertise on the internal network - default SLIRP addresses are per-VM
+  isolated NAT); the generated `KubeFlannelCNIConfig` is deleted (CNI none)
+  and `KubeProxyConfig.enabled: false` (Cilium replaces kube-proxy)
+- `worker.yaml` - `KubeNodeConfig.labels` (`bgp-policy: worker`)
+- `control-plane-1.yaml` - `LinkAliasConfig` per NIC (matched by MAC),
+  `LinkConfig` with static addresses and the default route, `ResolverConfig`,
+  `HostnameConfig`, route-reflector node label
+- `worker-1.yaml`, `worker-2.yaml` - same pattern per node
 
-Note: Talos v1.12+ requires hostname in the nocloud `meta-data` file (not in
-`machine.network.hostname`). The seed ISO generation sets `local-hostname` in
-meta-data automatically.
+Cluster secrets live apart from the configs: `talos/generated/secrets.yaml`
+is created once by `talosctl gen secrets` and reused (`gen config
+--with-secrets`), so configs regenerate whenever a patch changes without
+minting a new PKI. `make clean` keeps the bundle, `make nuke` removes it. For
+a cluster generated before this split, import its PKI once:
+
+```bash
+talosctl gen secrets --from-controlplane-config talos/generated/controlplane.yaml \
+  -o talos/generated/secrets.yaml
+```
+
+`make validate` renders these patches with the pinned `talosctl`, runs
+`talosctl validate` and asserts the resulting structure (see Phase 6).
+
+Note: the hostname is set by the per-node `HostnameConfig` document (highest
+priority source). The seed ISO generation still writes `local-hostname` into
+the nocloud `meta-data` as a fallback.
 
 Network configuration is fully declarative in the machine config. Both NICs
 receive static addresses at first boot (no manual post-boot step):
@@ -209,9 +248,13 @@ The upstream router uses standard cloud-init with three files under
 `cloud-init/upstream-router/`:
 
 - **meta-data**: instance identity and hostname
-- **user-data**: `k8s` user with SSH key, partition resize, security hardening
-- **network-config**: static IPv4 on management NIC (192.168.100.13/24),
-  internal NIC brought up with `optional: true`
+- **user-data**: `k8s` user with SSH key, partition resize, security
+  hardening, and the FRR setup: `packages: [frr]`, `/etc/frr/frr.conf`
+  written after the package install (`write_files` with `defer: true`), and
+  `runcmd` enabling `bgpd` in `/etc/frr/daemons` and restarting FRR
+- **network-config**: static IPv4 on the management NIC (192.168.100.13/24,
+  default route via `routes`), static `fd00:100::1/64` and `10.100.0.1/24` on
+  the internal NIC with router advertisements disabled
 
 #### Step 2.2.5: Generate Seed ISOs
 
@@ -310,82 +353,66 @@ The upstream router simulates edge/ToR infrastructure and provides:
 | Component                  | Address                      |
 |----------------------------|------------------------------|
 | Upstream Router (mgmt)     | 192.168.100.13/24 (static)   |
-| Upstream Router (internal) | fd00:100::1/64               |
+| Upstream Router (internal) | fd00:100::1/64, 10.100.0.1/24 |
 | Cluster AS                 | 64512                        |
 | Upstream AS                | 64513                        |
 
 ### 3.3 Implementation Steps
 
-#### Step 3.3.1: Configure Static IPv6 on Internal Interface
+Everything in this phase is applied by cloud-init on the router's first boot
+(`cloud-init/upstream-router/`); there is no manual step. The subsections
+describe what it does and how to verify it.
 
-SSH into the upstream router and configure the internal NIC with
-systemd-networkd:
+#### Step 3.3.1: Static Addressing on the Internal Interface
 
-```bash
-# /etc/systemd/network/20-internal.network
-[Match]
-Name=eth1  # Adjust to actual interface name
-
-[Network]
-Address=fd00:100::1/64
-IPv6AcceptRA=no
-LinkLocalAddressing=ipv6
-```
-
-```bash
-sudo systemctl restart systemd-networkd
-```
+`network-config` matches the internal NIC by MAC and assigns
+`fd00:100::1/64` and `10.100.0.1/24` with router advertisements disabled
+(`accept-ra: false`). cloud-init renders this through netplan to
+systemd-networkd, the same stack as on Debian 12, so the interface name the
+kernel picks does not matter.
 
 #### Step 3.3.2: Install and Configure FRRouting
 
-```bash
-sudo apt install -y frr
-
-# Enable BGP daemon
-sudo sed -i 's/bgpd=no/bgpd=yes/' /etc/frr/daemons
-```
-
-FRR configuration (`/etc/frr/frr.conf`):
+`user-data` installs the `frr` package (10.3 in Debian 13), writes
+`/etc/frr/frr.conf` once the package (and the `frr` user) exist, enables
+`bgpd` in `/etc/frr/daemons` and restarts FRR:
 
 ```text
-frr version 9.1
+frr version 10.3
 frr defaults traditional
 hostname upstream-router
 log syslog informational
 service integrated-vtysh-config
 !
 router bgp 64513
- bgp router-id 10.0.0.1
+ bgp router-id 10.100.0.1
  no bgp ebgp-requires-policy
  !
- ! eBGP peer to Route Reflector on control-plane-1
+ ! eBGP peer to the Route Reflector on control-plane-1
  neighbor fd00:100::10 remote-as 64512
  neighbor fd00:100::10 description rr-control-plane-1
  !
  address-family ipv4 unicast
-  network 0.0.0.0/0
   neighbor fd00:100::10 activate
   neighbor fd00:100::10 default-originate
  exit-address-family
  !
  address-family ipv6 unicast
-  network ::/0
   neighbor fd00:100::10 activate
   neighbor fd00:100::10 default-originate
  exit-address-family
 exit
 !
-ip route 0.0.0.0/0 Null0
-ipv6 route ::/0 Null0
-!
 ```
 
-```bash
-sudo systemctl restart frr
-```
+`default-originate` advertises `0.0.0.0/0` and `::/0` to the Route Reflector
+without static Null0 routes. `make validate` dry-runs this configuration with
+`vtysh -C` in the matching FRR container image.
 
 #### Step 3.3.3: Verification Checklist
 
+- [ ] cloud-init finished without errors (`make ssh-upstream`, then
+  `cloud-init status --long`)
 - [ ] Upstream router reachable from cluster nodes (`ping6 fd00:100::1`)
 - [ ] FRR running with BGP daemon enabled (`sudo vtysh -c "show bgp summary"`)
 - [ ] No Kubernetes components installed on `upstream-router`
@@ -429,9 +456,9 @@ Expected output: 3 nodes in `NotReady` state (CNI not yet installed).
 
 ```text
 NAME              STATUS     ROLES           AGE   VERSION
-control-plane-1   NotReady   control-plane   1m    v1.35.x
-worker-1          NotReady   <none>          1m    v1.35.x
-worker-2          NotReady   <none>          1m    v1.35.x
+control-plane-1   NotReady   control-plane   1m    v1.36.x
+worker-1          NotReady   <none>          1m    v1.36.x
+worker-2          NotReady   <none>          1m    v1.36.x
 ```
 
 Workers auto-join because their machine config contains the cluster
@@ -467,7 +494,7 @@ membership credentials generated during `talosctl gen config`.
 make cilium-install
 ```
 
-This runs `helm install` with Talos-specific values from
+This runs `helm upgrade --install` (re-runnable) with Talos-specific values from
 `manifests/cilium-values.yaml`:
 
 - `k8sServiceHost: localhost`, `k8sServicePort: 7445` — Talos KubePrism
@@ -625,6 +652,24 @@ sudo vtysh -c "show bgp ipv6 unicast"
 
 ## 7. Phase 6: Validation and Testing
 
+### 7.0 Automated Test Harness
+
+The checks below are automated in `tests/`:
+
+- `make test` (static, no lab needed; also runs in GitHub Actions on every
+  push): lint, Talos configs rendered and validated with the pinned
+  `talosctl` plus structural assertions, Cilium chart rendered and
+  schema-checked with kubeconform (including the Cilium BGP CRDs), FRR
+  `vtysh -C` dry-run for both FRR configurations, cloud-init schema, and
+  version consistency between the Makefile and the rest of the repository.
+- `make test-e2e` (against the running lab): Talos health and node versions,
+  Cilium health, iBGP and eBGP sessions on the Route Reflector, pod CIDR and
+  default-route propagation, and dual-stack pod-to-pod, Service, DNS and
+  north-south connectivity with a throwaway agnhost workload.
+
+GitHub-hosted runners have no hardware virtualization for aarch64 guests, so
+the e2e tier runs locally (or on a self-hosted Apple Silicon runner).
+
 ### 7.1 Network Connectivity Tests
 
 #### Step 7.1.1: Deploy Test Workloads
@@ -731,7 +776,7 @@ talosctl -n 192.168.100.11 pcap --interface eth1
 |-------------------|---------------------|----------------------------------------|
 | Virtualization    | QEMU                | Direct control, HVF/KVM acceleration   |
 | Guest OS (k8s)    | Talos Linux         | Immutable, API-driven, purpose-built   |
-| Guest OS (router) | Debian 12           | General-purpose, FRR as system daemon  |
+| Guest OS (router) | Debian 13           | General-purpose, FRR as system daemon  |
 | Container Runtime | containerd          | Built into Talos                       |
 | K8s Bootstrap     | talosctl            | Declarative, no SSH required           |
 | CNI               | Cilium              | eBPF-native, BGP support, no overlays  |
@@ -765,6 +810,16 @@ k8s_lab/
 |   +-- cilium-values.yaml
 |   +-- cilium-bgp.yaml
 |   +-- frr-route-reflector.yaml
++-- tests/                          # make test / make test-e2e
+|   +-- lib.sh
+|   +-- lint.sh
+|   +-- validate-*.sh
+|   +-- check-versions.sh
+|   +-- e2e.sh
+|   +-- manifests/
+|       +-- e2e-workload.yaml
++-- .github/workflows/ci.yaml       # runs make test on every push
++-- .yamllint.yaml
 +-- docs/
 |   +-- architecture/
 |   |   +-- overview.md
@@ -829,3 +884,4 @@ make down
 | 2.1     | 2026-04-15 | Generated | Talos v1.12.6, VDE networking, pflash UEFI, native routing, dual-stack internal NIC |
 | 2.2     | 2026-05-01 | Generated | Talos v1.13.0; Kubernetes pinned to v1.35.4 (Cilium 1.19 stable until 1.20 GA) |
 | 2.3     | 2026-07-01 | Generated | Talos v1.13.5, Kubernetes 1.35.6, Cilium 1.19.5, FRR 10.4.4 |
+| 2.4     | 2026-09-04 | Generated | Talos v1.14.0 (multi-document patches), Kubernetes 1.36.4, Cilium 1.20.1, FRR 10.7.1, Debian 13 router with cloud-init FRR, test harness + CI |

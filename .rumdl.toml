@@ -6,6 +6,8 @@ exclude = [
     "disks",
     "images",
     "Makefile",
+    # Historical document, kept as written at migration time.
+    "docs/talos-migration-plan.md",
 ]
 
 # Respect .gitignore files when scanning directories
@@ -16,6 +18,11 @@ respect-gitignore = true
 flavor = "standard"
 
 # Rule-specific configurations
+#
+# Bold text is used deliberately as sub-step labels in the implementation plan.
+[MD036]
+enabled = false
+
 [MD033]
 allowed-elements = ["br"]
 

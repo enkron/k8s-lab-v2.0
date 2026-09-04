@@ -1,0 +1,40 @@
+# yamllint configuration, tuned for Kubernetes manifests. Mirrors the workstation config
+# (env/dotfiles/yamllint.yaml) so `make lint` and CI apply the same rules.
+extends: default
+
+ignore: |
+  talos/generated/
+  disks/
+  images/
+  .cache/
+  .rumdl_cache/
+
+rules:
+  # Long container image references, annotation values and probe URLs are routine in
+  # manifests; the default 80 is unrealistic. Warn, not error.
+  line-length:
+    max: 120
+    level: warning
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  # kubectl/kustomize emit single documents without a leading ---.
+  document-start: disable
+  # Kubernetes ecosystem style: 2-space indent with indented block sequences.
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  # Keep the value check (catches unquoted yes/no/on/off pitfalls) but skip keys so the
+  # GitHub workflow `on:` key does not flag.
+  truthy:
+    check-keys: false
+  # One space between `#` and inline content is enough. cloud-init requires the first line
+  # of user-data to be exactly `#cloud-config`, so the starting-space check skips that file.
+  comments:
+    min-spaces-from-content: 1
+    ignore: |
+      cloud-init/upstream-router/user-data
+  # Allow the compact flow style common in manifests, e.g. `emptyDir: {}`.
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1

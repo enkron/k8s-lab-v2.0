@@ -1,3 +1,6 @@
-machine:
-  nodeLabels:
-    bgp-policy: worker
+# Worker patch: label workers so manifests/cilium-bgp.yaml selects them as iBGP clients.
+# Merged into the KubeNodeConfig document (nodeIP is set in common.yaml).
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+labels:
+  bgp-policy: worker

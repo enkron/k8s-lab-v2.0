@@ -1,73 +1,113 @@
+# Shared patch for all nodes (control plane + workers).
+#
+# Talos 1.14 generates multi-document machine configs. Inventory produced by
+# `talosctl gen config` v1.14.0 before patching:
+#   both node types:    v1alpha1 (main), DiscoveryServiceConfig, DiscoveryIdentityConfig,
+#                       UnattendedInstallConfig, ResolverConfig, VolumeConfig,
+#                       FilesystemTrimConfig, SecurityProfileConfig, HostnameConfig,
+#                       KubeClusterConfig, KubeNodeConfig, KubeletConfig, KubeNetworkConfig,
+#                       KubeAPIServerCAConfig, KubePrismConfig
+#   control plane only: KubeAggregatorCAConfig, KubeAdmissionControlConfig,
+#                       KubeAuditPolicyConfig, KubeAuthenticationConfig,
+#                       KubeAuthorizerConfig, KubeEtcdEncryptionConfig,
+#                       KubeServiceAccountConfig, KubeAPIServerConfig,
+#                       KubeControllerManagerConfig, KubeSchedulerConfig, KubeProxyConfig,
+#                       KubeFlannelCNIConfig, KubeCoreDNSConfig
+# Patch documents are matched by kind (plus name for named kinds) and merged; unmatched
+# documents are appended. Documents generated for both node types are patched here,
+# control-plane-only documents in controlplane.yaml. The v1alpha1 document keeps only
+# the fields that have no multi-document replacement.
 machine:
   # Talos API TLS certificate must include 127.0.0.1 and localhost because
   # talosctl connects through QEMU SLIRP port forwarding (host:50000 -> VM:50000).
   certSANs:
     - 127.0.0.1
     - localhost
-  kernel:
-    modules:
-      - name: br_netfilter
-  sysctls:
-    net.ipv4.ip_forward: "1"
-    net.ipv6.conf.all.forwarding: "1"
-    net.bridge.bridge-nf-call-iptables: "1"
-    net.bridge.bridge-nf-call-ip6tables: "1"
-  kubelet:
-    nodeIP:
-      # Force kubelet to register with addresses from the internal VDE network.
-      # Without this, kubelet picks the SLIRP management IP (192.168.100.x) which
-      # is per-VM isolated NAT — unreachable from other VMs. The internal network
-      # is a shared L2 segment where all VMs can communicate.
-      # IPv6 listed first → primary InternalIP is IPv6 (dual-stack, IPv6-primary).
-      # IPv4 (10.100.0.0/24) is required for Cilium's datapath — it needs an IPv4
-      # address on the routing device even in native routing mode.
-      validSubnets:
-        - fd00:100::/64
-        - 10.100.0.0/24
-  time:
-    servers:
-      - time.cloudflare.com
-  # When the lab runs behind a TLS-intercepting proxy, registry certificates are
-  # re-signed with a corporate root CA the Talos nodes do not trust, so image
-  # pulls fail with "x509: certificate signed by unknown authority". Skip cert
-  # verification for the registries we pull from.
-  registries:
-    config:
-      registry.k8s.io:
-        tls:
-          insecureSkipVerify: true
-      ghcr.io:
-        tls:
-          insecureSkipVerify: true
-      quay.io:
-        tls:
-          insecureSkipVerify: true
-      docker.io:
-        tls:
-          insecureSkipVerify: true
-cluster:
-  network:
-    # Cilium is installed separately via Helm (make cilium-install).
-    cni:
-      name: none
-    # IPv6-first dual-stack: the primary (first) family must match the API
-    # server's advertise address family. Since CLUSTER_ENDPOINT is IPv6
-    # (https://[fd00:100::10]:6443), IPv6 subnets come first.
-    podSubnets:
-      - fd00:244::/48
-      - 10.244.0.0/16
-    serviceSubnets:
-      - fd00:96::/112
-      - 10.96.0.0/16
-  proxy:
-    # Cilium replaces kube-proxy with eBPF-based service routing.
-    disabled: true
-  discovery:
-    registries:
-      # The external service registry (discovery.talos.dev:443) is unreachable
-      # behind a TLS-intercepting proxy (see machine.registries above) and is not
-      # needed here: membership is static and KubeSpan is not used. Disable only
-      # the service registry; the Kubernetes registry still discovers members
-      # once the API server is up.
-      service:
-        disabled: true
+---
+apiVersion: v1alpha1
+kind: KernelModuleConfig
+name: br_netfilter
+---
+apiVersion: v1alpha1
+kind: SysctlConfig
+params:
+  net.ipv4.ip_forward: "1"
+  net.ipv6.conf.all.forwarding: "1"
+  net.bridge.bridge-nf-call-iptables: "1"
+  net.bridge.bridge-nf-call-ip6tables: "1"
+---
+# Plain NTP, no NTS: Talos 1.14 defaults to NTS when no TimeSyncConfig is given, and the
+# NTS key exchange (TLS on port 4460) does not survive the TLS-intercepting proxy the lab
+# sometimes runs behind (see RegistryTLSConfig below).
+apiVersion: v1alpha1
+kind: TimeSyncConfig
+ntp:
+  servers:
+    - time.cloudflare.com
+  useNTS: false
+---
+# When the lab runs behind a TLS-intercepting proxy, registry certificates are re-signed
+# with a corporate root CA the Talos nodes do not trust, so image pulls fail with
+# "x509: certificate signed by unknown authority". Skip cert verification for the
+# registries we pull from (one RegistryTLSConfig document per registry host).
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: registry.k8s.io
+insecureSkipVerify: true
+---
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: ghcr.io
+insecureSkipVerify: true
+---
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: quay.io
+insecureSkipVerify: true
+---
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: docker.io
+insecureSkipVerify: true
+---
+# Force kubelet to register with addresses from the internal VDE network. Without this,
+# kubelet picks the SLIRP management IP (192.168.100.x) which is per-VM isolated NAT,
+# unreachable from other VMs. The internal network is a shared L2 segment where all VMs
+# can communicate. IPv6 listed first -> primary InternalIP is IPv6 (dual-stack,
+# IPv6-primary). IPv4 (10.100.0.0/24) is required for Cilium's datapath: it needs an IPv4
+# address on the routing device even in native routing mode.
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+nodeIP:
+  validSubnets:
+    - fd00:100::/64
+    - 10.100.0.0/24
+---
+# IPv6-first dual-stack: the primary (first) family must match the API server's advertise
+# address family. Since CLUSTER_ENDPOINT is IPv6 (https://[fd00:100::10]:6443), IPv6
+# subnets come first. podSubnets/serviceSubnets replace the generated IPv4-only lists
+# (they are the only list fields that overwrite instead of append on merge).
+# Talos 1.14 passes --allocate-node-cidrs, --cluster-cidr and the per-node mask sizes to
+# kube-controller-manager itself, so they are no longer extraArgs. Keep the IPv6 pod
+# subnet within 16 bits of the per-node mask (/48 vs /64 here): Talos rejects a larger
+# gap, and service subnets may have at most 20 host bits.
+apiVersion: v1alpha1
+kind: KubeNetworkConfig
+podSubnets:
+  - fd00:244::/48
+  - 10.244.0.0/16
+serviceSubnets:
+  - fd00:96::/112
+  - 10.96.0.0/16
+nodeCIDRMaskSizeIPv4: 24
+nodeCIDRMaskSizeIPv6: 64
+---
+# Cluster discovery is off. The external service registry (discovery.talos.dev:443) is
+# unreachable behind the TLS-intercepting proxy and not needed: membership is static and
+# KubeSpan is not used. Talos 1.14 disables the service by removing every
+# DiscoveryServiceConfig document; the Kubernetes registry is deprecated and already
+# disabled by default. The health and dashboard targets pass explicit node lists.
+apiVersion: v1alpha1
+kind: DiscoveryServiceConfig
+name: default
+$patch: delete

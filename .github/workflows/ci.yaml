@@ -1,0 +1,123 @@
+# Static validation of the lab on every push.
+#
+# GitHub-hosted runners cannot run the QEMU/HVF lab itself (no nested virtualization on the
+# Apple Silicon macOS runners, no KVM on the arm64 Linux runners), so CI runs `make test`:
+# lint plus rendering and validating every config against the versions pinned in the
+# Makefile. `make test-e2e` runs locally against the live lab.
+#
+# No pull_request trigger: same-repo PRs would run twice, push already covers them.
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tool versions not owned by the Makefile. Cluster component versions come from
+  # `make -s print-<VAR>` below so the Makefile stays their single source of truth.
+  HELM_VERSION: 4.2.4
+  KUBECONFORM_VERSION: 0.8.0
+  ACTIONLINT_VERSION: 1.7.12
+  YQ_VERSION: 4.53.2
+  YAMLLINT_VERSION: 1.37.1
+  RUMDL_VERSION: 0.2.60
+
+jobs:
+  validate:
+    name: lint + validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read pinned cluster versions from the Makefile
+        run: |
+          for v in TALOS_VERSION KUBERNETES_VERSION; do
+            echo "$v=$(make -s print-"$v")" >> "$GITHUB_ENV"
+          done
+
+      - name: Install pinned tools
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          # Ahead of the runner's preinstalled helm/kubectl.
+          echo "$bin" >> "$GITHUB_PATH"
+
+          # talosctl: same release as the Talos nodes (Talos 1.14 multi-document kinds).
+          curl -fsSL --retry 3 -o "$bin/talosctl" \
+            "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+          curl -fsSL --retry 3 -o talos-sha256sum.txt \
+            "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/sha256sum.txt"
+          echo "$(grep ' talosctl-linux-amd64$' talos-sha256sum.txt | cut -d' ' -f1)  $bin/talosctl" \
+            | sha256sum -c -
+          chmod +x "$bin/talosctl"
+
+          # kubectl at the pinned Kubernetes version.
+          kubectl_url="https://dl.k8s.io/release/v${KUBERNETES_VERSION}/bin/linux/amd64"
+          curl -fsSL --retry 3 -o "$bin/kubectl" "$kubectl_url/kubectl"
+          echo "$(curl -fsSL "$kubectl_url/kubectl.sha256")  $bin/kubectl" | sha256sum -c -
+          chmod +x "$bin/kubectl"
+
+          # Helm 4, like the workstation.
+          helm_url="https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL --retry 3 -o helm.tgz "$helm_url"
+          echo "$(curl -fsSL "$helm_url.sha256sum" | cut -d' ' -f1)  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz --strip-components=1 -C "$bin" linux-amd64/helm
+
+          # kubeconform
+          kubeconform_url="https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}"
+          curl -fsSL --retry 3 -o kubeconform.tgz "$kubeconform_url/kubeconform-linux-amd64.tar.gz"
+          curl -fsSL --retry 3 -o kubeconform-checksums "$kubeconform_url/CHECKSUMS"
+          echo "$(grep ' kubeconform-linux-amd64.tar.gz$' kubeconform-checksums | cut -d' ' -f1)  kubeconform.tgz" \
+            | sha256sum -c -
+          tar -xzf kubeconform.tgz -C "$bin" kubeconform
+
+          # actionlint and yq: pinned tags (no single-file upstream checksums).
+          actionlint_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          curl -fsSL --retry 3 -o actionlint.tgz \
+            "$actionlint_url/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf actionlint.tgz -C "$bin" actionlint
+          curl -fsSL --retry 3 -o "$bin/yq" \
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          chmod +x "$bin/yq"
+
+          # Python linters at the workstation's versions; cloud-init for the schema check;
+          # ShellCheck for tests/*.sh (actionlint also runs it on these run: blocks).
+          pipx install "yamllint==${YAMLLINT_VERSION}"
+          pipx install "rumdl==${RUMDL_VERSION}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends cloud-init shellcheck
+
+      - name: make test
+        env:
+          CI: "1"
+        run: make test
+
+  # Upstream availability is not something a push can regress, so a flaky mirror must not
+  # fail the build: this job only reports.
+  upstream-availability:
+    name: pinned artifacts exist upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install yq
+        run: |
+          sudo curl -fsSL --retry 3 -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Check every pinned artifact exists upstream
+        env:
+          CI: "1"
+        run: tests/check-versions.sh --remote

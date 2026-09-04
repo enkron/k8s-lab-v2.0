@@ -6,7 +6,7 @@
   (mgmt + internal).
 - QEMU with KVM (Linux) or HVF (macOS).
 - Kubernetes nodes run Talos Linux (immutable, API-driven); upstream router runs
-  Debian 12 with FRR.
+  Debian 13 with FRR.
 - Talos bootstraps the cluster via `talosctl`; `etcd` runs as a static pod.
 - Explicit L3 routing without hidden overlays.
 - Pod and Service networks are distinct; Pod CIDRs via iBGP (AS 64512).
@@ -75,14 +75,15 @@ Initial cluster topology:
 
 | Role            | Count | vCPU | RAM   | OS       | Description                                           |
 |-----------------|-------|------|-------|----------|-------------------------------------------------------|
-| Upstream Router | 1     | 1    | 512MB | Debian 12 | FRR-based edge router; eBGP peer, default gateway    |
+| Upstream Router | 1     | 1    | 512MB | Debian 13 | FRR-based edge router; eBGP peer, default gateway    |
 | Control Plane   | 1     | 2    | 4GB   | Talos    | kube-apiserver, scheduler, controller-manager, etcd   |
 | Worker Node     | 2     | 2    | 4GB   | Talos    | Run workloads and CNI datapath                        |
 
 Kubernetes nodes run Talos Linux — an immutable, API-driven OS purpose-built
-for Kubernetes. The upstream router runs Debian 12 because it requires FRR as
-a system daemon (Talos cannot run arbitrary daemons outside Kubernetes). Each
-node is a full Linux VM.
+for Kubernetes. The upstream router runs Debian 13 because it requires FRR as
+a system daemon (Talos cannot run arbitrary daemons outside Kubernetes); its
+FRR is installed and configured by cloud-init at first boot. Each node is a
+full Linux VM.
 
 ### 6.3 Upstream Router
 
@@ -115,7 +116,8 @@ is not a Kubernetes node — it runs no kubelet or container runtime.
 **Addressing:**
 
 - Management NIC: static IPv4 192.168.100.13/24.
-- Internal NIC: static IPv6 fd00:100::1/64.
+- Internal NIC: static IPv6 fd00:100::1/64 and IPv4 10.100.0.1/24 (gives the
+  originated IPv4 default route a reachable next hop).
 
 Management addressing for all nodes is deterministic in the current lab runtime:
 

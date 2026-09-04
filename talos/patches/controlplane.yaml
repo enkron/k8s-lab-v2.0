@@ -1,32 +1,47 @@
+# Control-plane patch. The documents below are generated for control-plane nodes only
+# (see the inventory in common.yaml).
 cluster:
-  controllerManager:
-    extraArgs:
-      # Bind to all interfaces (dual-stack) for metrics scraping.
-      bind-address: "::"
-      allocate-node-cidrs: "true"
-      # IPv6-first: primary family must match the API server's advertise address
-      # (fd00:100::10, derived from CLUSTER_ENDPOINT).
-      cluster-cidr: fd00:244::/48,10.244.0.0/16
-      node-cidr-mask-size-ipv4: "24"
-      node-cidr-mask-size-ipv6: "64"
-  scheduler:
-    extraArgs:
-      bind-address: "::"
-  apiServer:
-    extraArgs:
-      bind-address: "::"
-    # SANs for TLS validation from all access paths:
-    #   - 192.168.100.10: SLIRP management NIC (host port forwarding)
-    #   - fd00:100::10: internal VDE network (inter-VM, cluster endpoint)
-    #   - 127.0.0.1: host kubectl via SLIRP hostfwd (tcp::6443 -> :6443)
-    certSANs:
-      - 192.168.100.10
-      - fd00:100::10
-      - 127.0.0.1
   etcd:
-    # By default, etcd advertises on the node's primary IP (192.168.100.10 —
-    # the SLIRP management NIC). That address is per-VM isolated NAT and
-    # unreachable from other VMs. Force etcd to advertise on the internal
-    # VDE network so peer discovery and health checks use routable addresses.
+    # By default, etcd advertises on the node's primary IP (192.168.100.10, the SLIRP
+    # management NIC). That address is per-VM isolated NAT and unreachable from other
+    # VMs. Force etcd to advertise on the internal VDE network so peer discovery and
+    # health checks use routable addresses.
     advertisedSubnets:
       - fd00:100::/64
+---
+apiVersion: v1alpha1
+kind: KubeAPIServerConfig
+extraArgs:
+  # Bind to all interfaces (dual-stack) for metrics scraping.
+  bind-address: "::"
+# SANs for TLS validation from all access paths:
+#   - 192.168.100.10: SLIRP management NIC (host port forwarding)
+#   - fd00:100::10: internal VDE network (inter-VM, cluster endpoint)
+#   - 127.0.0.1: host kubectl via SLIRP hostfwd (tcp::6443 -> :6443)
+certExtraSANs:
+  - 192.168.100.10
+  - fd00:100::10
+  - 127.0.0.1
+---
+# The cluster CIDR, node CIDR allocation and per-node mask sizes are derived from
+# KubeNetworkConfig (common.yaml) by Talos; only the bind address is left to set here.
+apiVersion: v1alpha1
+kind: KubeControllerManagerConfig
+extraArgs:
+  bind-address: "::"
+---
+apiVersion: v1alpha1
+kind: KubeSchedulerConfig
+extraArgs:
+  bind-address: "::"
+---
+# Cilium is installed separately via Helm (make cilium-install): drop the default Flannel
+# CNI document (the Talos 1.14 equivalent of `cni: name: none`) ...
+apiVersion: v1alpha1
+kind: KubeFlannelCNIConfig
+$patch: delete
+---
+# ... and disable kube-proxy: Cilium replaces it with eBPF-based service routing.
+apiVersion: v1alpha1
+kind: KubeProxyConfig
+enabled: false
