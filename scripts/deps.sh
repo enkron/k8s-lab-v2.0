@@ -213,7 +213,9 @@ evaluate() {
   n=$(nfields "$ckey")
   while IFS= read -r t; do
     k=$(vkey "$t")
-    [ -n "$k" ] && [ "$(nfields "$k")" = "$n" ] && [ "$(vcmp "$k" "$ckey")" = 1 ] || continue
+    if [ -z "$k" ] || [ "$(nfields "$k")" != "$n" ] || [ "$(vcmp "$k" "$ckey")" != 1 ]; then
+      continue
+    fi
     if [ -z "$lk" ] || [ "$(vcmp "$k" "$lk")" = 1 ]; then lk=$k latest=$t; fi
     satisfies "$k" "$constraint" || continue
     lvl=$(level "$ckey" "$k")
