@@ -55,9 +55,12 @@ if [ "${1:-}" = --remote ]; then
   head_ok() { curl -fsSIL --retry 3 -o /dev/null "$1"; }
   check "Talos image exists: $TALOS_IMAGE_URL" head_ok "$TALOS_IMAGE_URL"
   check "Debian image exists: $DEBIAN_IMAGE_URL" head_ok "$DEBIAN_IMAGE_URL"
+  # Read the whole file before matching: 'curl | grep -q' races, grep exits on the first hit and
+  # curl fails writing the rest (exit 23), which pipefail turns into a failed check.
   debian_sha_ok() {
-    curl -fsSL --retry 3 "${DEBIAN_IMAGE_URL%/*}/SHA512SUMS" \
-      | grep -qx "$DEBIAN_IMAGE_SHA512  ${DEBIAN_IMAGE_URL##*/}"
+    local sums
+    sums=$(curl -fsSL --retry 3 "${DEBIAN_IMAGE_URL%/*}/SHA512SUMS")
+    grep -qx "$DEBIAN_IMAGE_SHA512  ${DEBIAN_IMAGE_URL##*/}" <<<"$sums"
   }
   check "Debian image SHA-512 matches the published SHA512SUMS" debian_sha_ok
   check "Kubernetes v$K8S_VERSION release exists (kubectl binary)" \
