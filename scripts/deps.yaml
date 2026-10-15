@@ -81,6 +81,8 @@
   pin: {file: Makefile, match: 'DEBIAN_IMAGE_BUILD[[:space:]]*:=[[:space:]]*'}
   source: {type: debian-cloud, release_var: DEBIAN_RELEASE, version_var: DEBIAN_VERSION}
   checksum: {match: 'DEBIAN_IMAGE_SHA512[[:space:]]*:=[[:space:]]*'}
+  derived:
+    - {file: README.md, match: '\| Debian cloud image build \| '}
   note: point builds of the same release; run 'make clean vms' after 'make images'
 
 - name: debian-release

@@ -51,18 +51,34 @@ inter-VM L2).
 | FRR (Route Reflector pod) | 10.7.1 | `Makefile` (`FRR_VERSION`), mirrored in the manifest |
 | FRR (upstream router) | 10.3 (Debian 13 package) | `Makefile` (`FRR_ROUTER_VERSION`, check only) |
 | Debian (upstream router) | 13 trixie | `Makefile` (`DEBIAN_RELEASE`) |
+| Debian cloud image build | 20261015-2632 | `Makefile` (`DEBIAN_IMAGE_BUILD`, SHA-512 verified) |
 
 Kubernetes stays on the newest minor that the stable Cilium release is
 e2e-tested against (Talos 1.14 itself defaults to 1.37). The machine config
 patches use the Talos 1.14 multi-document kinds, so `talosctl` must not be
-older than `TALOS_VERSION`; `make check-tools` enforces this. Until nixpkgs
-ships talosctl 1.14, override the package in the env flake or point
+older than `TALOS_VERSION`; `make check-tools` enforces this. If nixpkgs lags
+behind `TALOS_VERSION` after a bump, override the package or point
 `TALOSCTL=/path/to/talosctl` at a release binary when running `make`.
+
+## Before you start
+
+- **SSH key for the router**: `cloud-init/upstream-router/user-data` lets
+  user `k8s` in only with the key listed under `ssh_authorized_keys`. Put your
+  own public key there before `make seed`, or `make ssh-upstream` is refused
+  (password login is disabled). Nothing else needs SSH: the Talos nodes have
+  no sshd and `make test-e2e` does not use it.
+- **Free host ports**: QEMU forwards host ports 50000 (Talos API,
+  control-plane-1), 50001/50002 (Talos API, workers), 6443 (Kubernetes API)
+  and 2200 (SSH to the router). A VM fails to start if its port is taken.
+  The forwards listen on all host interfaces, not only loopback, so these
+  services are reachable from your network (mTLS / key auth still apply).
+- **Tools**: see [Requirements](#requirements); `make check-tools` covers the
+  version-sensitive ones.
 
 ## Quick start
 
 ```bash
-make check-tools    # talosctl/kubectl/cilium-cli match the pinned versions
+make check-tools    # talosctl >= TALOS_VERSION, kubectl skew, cilium-cli present
 make images         # download Debian + Talos base images
 make vms            # create per-node CoW disks
 make talos-gen      # generate Talos machine configs
@@ -80,6 +96,25 @@ make test-e2e       # end-to-end checks (BGP, routes, dual-stack connectivity)
 
 See `make help` for all targets.
 
+## Using the lab
+
+| Task | How |
+|---|---|
+| kubectl | `make kubeconfig` adds and selects the `admin@k8s-lab` context in `~/.kube/config` |
+| talosctl by hand | `export TALOSCONFIG=$PWD/talos/generated/talosconfig` (make targets set it themselves) |
+| Cluster health / TUI | `make talos-health`, `make talos-dashboard` |
+| Router shell | `make ssh-upstream` (`ssh -p 2200 k8s@localhost`) |
+| Serial console | `make console-<node>`, e.g. `make console-worker-1` (any VM, also before boot completes) |
+| VM state | `make status` |
+| Stop / resume | `make down`, later `make up`: the VMs boot from their disks, no new `bootstrap` |
+| Tear down | `make clean` (keeps images and the PKI), `make nuke` (everything) |
+
+The talosconfig endpoint is `127.0.0.1:50000` (control-plane-1); after
+bootstrap, requests for the workers are proxied through it, addressed by
+their internal IPs (`fd00:100::11`, `fd00:100::12`).
+
+## Rebuilding after a version bump
+
 A version bump is applied by rebuilding, not by upgrading in place: the
 Talos 1.14 config-format migration is simpler on a fresh cluster than through
 `talosctl upgrade` and `talosctl upgrade-k8s` (if you do upgrade in place,
@@ -87,9 +122,10 @@ Talos 1.14 config-format migration is simpler on a fresh cluster than through
 `talosctl upgrade --image`). `make clean` stops the VMs and
 removes disks and generated configs but keeps the base images and the Talos
 secrets bundle (`talos/generated/secrets.yaml`, so the PKI survives); `make
-nuke` also removes images and secrets. After bumping `TALOS_VERSION` the new
-base image is downloaded on `make images`, but existing disks are not
-recreated: run `make clean vms`. Then continue with the quick start.
+nuke` also removes images and secrets. After bumping `TALOS_VERSION` or
+`DEBIAN_IMAGE_BUILD` the new base image is downloaded on `make images`, but
+existing disks are not recreated: run `make clean`, then the quick start from
+the top. Superseded base images stay in `images/`; delete them by hand.
 
 ## Updating dependencies
 
@@ -121,11 +157,22 @@ posts the `deps-outdated` table to the job summary every Monday.
 | `make test` | `lint` + `validate`; runs in GitHub Actions on every push | as above |
 | `make test-e2e` | live lab: Talos health and versions, Cilium, iBGP + eBGP sessions, route propagation, dual-stack pod/Service/DNS connectivity, north-south reachability | running lab |
 
+`make test-e2e` takes `E2E_TIMEOUT=<seconds>` (wait budget per check, default
+300), `E2E_SKIP_UPSTREAM=1` (do not require the eBGP session to the router)
+and `E2E_KEEP=1` (keep the `e2e-test` namespace for debugging).
+
 GitHub-hosted runners cannot run the QEMU/HVF lab (no nested virtualization
 on Apple Silicon runners, no KVM on arm64 Linux runners), so the e2e tier
-stays local or on a self-hosted Apple Silicon runner. CI reads every pinned
-version from the Makefile (`make -s print-<VAR>`), which is the single source
-of truth.
+stays local or on a self-hosted Apple Silicon runner. CI
+(`.github/workflows/ci.yaml`) runs:
+
+- on every push: `make test`, plus `tests/check-versions.sh --remote`
+  (every pinned artifact still exists upstream; reports only, never fails
+  the build)
+- every Monday: the `make deps-outdated` table in the job summary
+
+Cluster versions come from the Makefile (`make -s print-<VAR>`), CI tool
+versions from the workflow `env`; `scripts/deps.yaml` lists both.
 
 ## Documentation
 
@@ -153,7 +200,8 @@ k8s_lab/
 │   └── frr-route-reflector.yaml  # FRR DaemonSet + ConfigMap
 ├── scripts/                  # deps.yaml registry + deps.sh (bump/sync)
 ├── tests/                    # make test (static) and make test-e2e (live lab)
-├── .github/workflows/ci.yaml # runs make test on every push
+├── .github/workflows/ci.yaml # make test on push, weekly dependency report
+├── .claude/skills/bump-deps/ # /bump-deps: reviewed dependency bumps (Claude Code)
 └── docs/
 ```
 
@@ -164,11 +212,14 @@ k8s_lab/
 - ~16 GB RAM, ~50 GB disk
 
 Tools (all via Nix): `gnumake` (GNU Make >= 4; the macOS system `make` 3.81
-exits with a hint), `qemu`, `vde2`, `zstd`, `talosctl` (>= 1.14), `kubectl`,
-`helm`, `cilium-cli`, `socat`, `cdrtools` (mkisofs), `yq`, `jq`. The test
-harness also uses `yamllint`, `rumdl`, `shellcheck`, `actionlint`,
+exits with a hint), `qemu`, `vde2` (resolved with `nix build nixpkgs#vde2`
+when `vde_switch` is not on `PATH`), `zstd`, `talosctl` (>= 1.14), `kubectl`,
+`helm`, `cilium-cli`, `socat`, `cdrtools` (mkisofs), `curl`, `yq`, `jq`. The
+test harness also uses `yamllint`, `rumdl`, `shellcheck`, `actionlint`,
 `kubeconform` (`nix shell nixpkgs#<tool>`) and a running container runtime
-(`podman`) for the FRR dry-run.
+(`podman` or `docker`) for the FRR dry-run; `cloud-init` for the schema check
+is optional locally (skipped when missing, required in CI). The dependency
+scripts need `git` and `skopeo`.
 
 ## License
 

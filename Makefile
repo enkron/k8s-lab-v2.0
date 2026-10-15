@@ -247,7 +247,7 @@ print-%: ## Print a Makefile variable (make -s print-<VAR>)
 # newer client is fine: --talos-version pins the generated layout. The '|| true' inside the
 # substitutions keep a missing binary on the friendly-message path under pipefail.
 .PHONY: check-tools
-check-tools: ## Verify talosctl/kubectl/cilium-cli match the pinned versions
+check-tools: ## Verify talosctl >= TALOS_VERSION, kubectl version skew, cilium-cli present
 	@have=$$({ $(TALOSCTL) version --client 2>/dev/null || true; } \
 		| sed -n 's/^[[:space:]]*Tag:[[:space:]]*v*//p' | head -1 || true); \
 	[ -n "$$have" ] || { echo "check-tools: cannot run '$(TALOSCTL) version' (set TALOSCTL=/path/to/talosctl)" >&2; exit 1; }; \
