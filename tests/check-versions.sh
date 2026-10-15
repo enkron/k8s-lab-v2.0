@@ -17,6 +17,7 @@ FRR_ROUTER_VERSION=$(mkvar FRR_ROUTER_VERSION)
 DEBIAN_VERSION=$(mkvar DEBIAN_VERSION)
 TALOS_IMAGE_URL=$(mkvar TALOS_IMAGE_URL)
 DEBIAN_IMAGE_URL=$(mkvar DEBIAN_IMAGE_URL)
+DEBIAN_IMAGE_SHA512=$(mkvar DEBIAN_IMAGE_SHA512)
 
 minor() { local v=${1#v}; printf '%s\n' "${v%.*}"; } # v1.14.0 -> 1.14, 10.7.1 -> 10.7
 
@@ -45,11 +46,20 @@ anchor() { # TEXT
 anchor "Talos v$(minor "$TALOS_VERSION")"
 anchor "Debian $DEBIAN_VERSION"
 
+# Every derived copy listed in scripts/deps.yaml (including the README version table) matches its
+# pin; 'make sync-versions' fixes a failure here.
+check "derived version copies match their pins (scripts/deps.yaml)" scripts/deps.sh sync --check
+
 if [ "${1:-}" = --remote ]; then
   need curl jq
   head_ok() { curl -fsSIL --retry 3 -o /dev/null "$1"; }
   check "Talos image exists: $TALOS_IMAGE_URL" head_ok "$TALOS_IMAGE_URL"
   check "Debian image exists: $DEBIAN_IMAGE_URL" head_ok "$DEBIAN_IMAGE_URL"
+  debian_sha_ok() {
+    curl -fsSL --retry 3 "${DEBIAN_IMAGE_URL%/*}/SHA512SUMS" \
+      | grep -qx "$DEBIAN_IMAGE_SHA512  ${DEBIAN_IMAGE_URL##*/}"
+  }
+  check "Debian image SHA-512 matches the published SHA512SUMS" debian_sha_ok
   check "Kubernetes v$K8S_VERSION release exists (kubectl binary)" \
     head_ok "https://dl.k8s.io/release/v$K8S_VERSION/bin/linux/amd64/kubectl"
   chart_ok() {

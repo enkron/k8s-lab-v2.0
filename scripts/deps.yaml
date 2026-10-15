@@ -1,0 +1,145 @@
+# Pinned dependencies, read by scripts/deps.sh (make deps-outdated / deps-bump / sync-versions).
+#
+# Every entry names the one place its version is pinned (pin), where to look for releases
+# upstream (source) and the files that copy the pinned value (derived; rewritten by
+# 'make sync-versions', checked by tests/check-versions.sh). The Makefile stays the single source
+# of truth for the cluster versions; CI tool versions are pinned in the workflow env.
+#
+# Fields:
+#   name           identifier for 'make deps-bump DEPS=<name>'
+#   group          cluster | test | ci-tools; one commit per group when bumping
+#   pin            {file, match}: match is a POSIX ERE for the start of the line up to the value;
+#                  the value is the [A-Za-z0-9._+-] run right after it. Every matching line
+#                  must carry the same value; a bump rewrites all of them.
+#   source         where upstream releases are listed (see the lookup functions in deps.sh):
+#                    git-tags {repo}: GitHub repo tags (git ls-remote, no API token)
+#                    helm {url, chart}: Helm repository index
+#                    oci {image}: container registry tags (skopeo)
+#                    pypi {package}
+#                    frr-deb {suite_var, image}: newest FRR image tag within the minor that
+#                      Debian ships in the release named by the Makefile variable suite_var
+#                    debian-cloud {release_var, version_var}: dated Debian cloud image builds
+#                    debian-stable: the codename of the current Debian stable release
+#   default_level  highest update level a plain 'make deps-bump' applies: patch (default),
+#                  minor or major. 'LEVEL=' overrides it for the entries named in DEPS.
+#   constraint     '<X.Y' or '<=X.Y.Z': never bump to a version outside it. Record why next to it.
+#   derived        list of {file, match, format}: format full (default) or minor (X.Y)
+#   checksum       {match}: pin that receives the SHA-512 of the artifact (debian-cloud only)
+#   manual         true: report only, never bumped by the script
+#   note           shown by 'outdated'; for the reviewer, not the script
+
+# --- Cluster: Makefile '--- Versions ---'. Talos, Kubernetes and Cilium move as a tested set. ---
+
+- name: talos
+  group: cluster
+  pin: {file: Makefile, match: 'TALOS_VERSION[[:space:]]*:=[[:space:]]*'}
+  source: {type: git-tags, repo: siderolabs/talos}
+  derived:
+    - {file: README.md, match: '\| Talos Linux \| '}
+  note: minor bumps may change the machine config format (talos/patches); read the upgrade notes
+
+- name: kubernetes
+  group: cluster
+  pin: {file: Makefile, match: 'KUBERNETES_VERSION[[:space:]]*:=[[:space:]]*'}
+  source: {type: git-tags, repo: kubernetes/kubernetes}
+  # Stable Cilium (1.20.x) is e2e-tested up to Kubernetes 1.36. Move this together with
+  # CILIUM_VERSION and the triad comment in the Makefile.
+  constraint: '<1.37'
+  derived:
+    - {file: README.md, match: '\| Kubernetes \| '}
+  note: must sit in both the Talos support matrix and the Cilium e2e-tested window
+
+- name: cilium
+  group: cluster
+  pin: {file: Makefile, match: 'CILIUM_VERSION[[:space:]]*:=[[:space:]]*'}
+  source: {type: helm, url: 'https://helm.cilium.io', chart: cilium}
+  derived:
+    - {file: README.md, match: '\| Cilium \(Helm chart\) \| '}
+  note: minor bumps may raise the Kubernetes window; check manifests/cilium-values.yaml keys
+
+- name: frr
+  group: cluster
+  pin: {file: Makefile, match: 'FRR_VERSION[[:space:]]*:=[[:space:]]*'}
+  source: {type: oci, image: quay.io/frrouting/frr}
+  derived:
+    - {file: manifests/frr-route-reflector.yaml, match: '[[:space:]]*image: quay\.io/frrouting/frr:'}
+    - {file: manifests/frr-route-reflector.yaml, match: '[[:space:]]*frr version ', format: minor}
+    - {file: README.md, match: '\| FRR \(Route Reflector pod\) \| '}
+  note: a minor bump moves the 'frr version' header, which changes version-gated defaults
+
+- name: frr-router
+  group: cluster
+  pin: {file: Makefile, match: 'FRR_ROUTER_VERSION[[:space:]]*:=[[:space:]]*'}
+  source: {type: frr-deb, suite_var: DEBIAN_RELEASE, image: quay.io/frrouting/frr}
+  derived:
+    - {file: cloud-init/upstream-router/user-data, match: '[[:space:]]*frr version ', format: minor}
+    - {file: README.md, match: '\| FRR \(upstream router\) \| ', format: minor}
+  note: follows the Debian frr package; only used to dry-run the router's frr.conf
+
+- name: debian-image
+  group: cluster
+  pin: {file: Makefile, match: 'DEBIAN_IMAGE_BUILD[[:space:]]*:=[[:space:]]*'}
+  source: {type: debian-cloud, release_var: DEBIAN_RELEASE, version_var: DEBIAN_VERSION}
+  checksum: {match: 'DEBIAN_IMAGE_SHA512[[:space:]]*:=[[:space:]]*'}
+  note: point builds of the same release; run 'make clean vms' after 'make images'
+
+- name: debian-release
+  group: cluster
+  pin: {file: Makefile, match: 'DEBIAN_RELEASE[[:space:]]*:=[[:space:]]*'}
+  source: {type: debian-stable}
+  manual: true
+  note: a new Debian major moves DEBIAN_RELEASE + DEBIAN_VERSION together and the router FRR
+
+# --- Test workloads ---
+
+- name: agnhost
+  group: test
+  pin: {file: tests/manifests/e2e-workload.yaml, match: '[[:space:]]*image: registry\.k8s\.io/e2e-test-images/agnhost:'}
+  source: {type: oci, image: registry.k8s.io/e2e-test-images/agnhost}
+  default_level: minor
+
+# --- CI tools: .github/workflows/ci.yaml ---
+
+- name: helm
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*HELM_VERSION:[[:space:]]*'}
+  source: {type: git-tags, repo: helm/helm}
+  default_level: minor
+
+- name: kubeconform
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*KUBECONFORM_VERSION:[[:space:]]*'}
+  source: {type: git-tags, repo: yannh/kubeconform}
+  default_level: minor
+
+- name: actionlint
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*ACTIONLINT_VERSION:[[:space:]]*'}
+  source: {type: git-tags, repo: rhysd/actionlint}
+  default_level: minor
+
+- name: yq
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*YQ_VERSION:[[:space:]]*'}
+  source: {type: git-tags, repo: mikefarah/yq}
+  default_level: minor
+
+- name: yamllint
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*YAMLLINT_VERSION:[[:space:]]*'}
+  source: {type: pypi, package: yamllint}
+  default_level: minor
+  note: CI mirrors the workstation's version; check 'yamllint --version' before bumping past it
+
+- name: rumdl
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*RUMDL_VERSION:[[:space:]]*'}
+  source: {type: pypi, package: rumdl}
+  default_level: minor
+  note: CI mirrors the workstation's version; check 'rumdl --version' before bumping past it
+
+- name: actions-checkout
+  group: ci-tools
+  pin: {file: .github/workflows/ci.yaml, match: '[[:space:]]*-[[:space:]]*uses:[[:space:]]*actions/checkout@'}
+  source: {type: git-tags, repo: actions/checkout}
+  note: pinned by major tag; a major bump needs LEVEL=major

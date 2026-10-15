@@ -5,12 +5,15 @@
 # lint plus rendering and validating every config against the versions pinned in the
 # Makefile. `make test-e2e` runs locally against the live lab.
 #
-# No pull_request trigger: same-repo PRs would run twice, push already covers them.
+# No pull_request trigger: same-repo PRs would run twice, push already covers them. The weekly
+# schedule only runs the dependency report (scripts/deps.sh); push only runs the checks.
 name: ci
 
 on:
   push:
   workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -32,6 +35,7 @@ env:
 jobs:
   validate:
     name: lint + validate
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -105,6 +109,7 @@ jobs:
   # fail the build: this job only reports.
   upstream-availability:
     name: pinned artifacts exist upstream
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
@@ -121,3 +126,31 @@ jobs:
         env:
           CI: "1"
         run: tests/check-versions.sh --remote
+
+  # Newer upstream releases for every pin in scripts/deps.yaml, as a table in the job summary.
+  # Report only: nothing is bumped, no token, no PRs; 'make deps-bump' (or /bump-deps) applies.
+  deps-outdated:
+    name: outdated dependencies
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install yq
+        run: |
+          sudo curl -fsSL --retry 3 -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Report outdated dependencies
+        run: |
+          set -euo pipefail
+          # skopeo is preinstalled on the Ubuntu runner image; install it if that ever changes.
+          command -v skopeo >/dev/null || sudo apt-get install -y -qq --no-install-recommends skopeo
+          {
+            echo '## Outdated dependencies'
+            echo
+            scripts/deps.sh outdated --markdown
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -45,6 +45,8 @@ ZSTD     ?= zstd
 SOCAT    ?= socat
 CURL     ?= curl
 JQ       ?= jq
+# shasum ships with macOS (perl) and Ubuntu; sha512sum is not on macOS without coreutils.
+SHASUM   ?= shasum
 # talosctl binary. The machine config patches use Talos 1.14 multi-document kinds, so the client
 # must not be older than TALOS_VERSION (checked by 'make check-tools'). Exported because tests/
 # fall back to it: TALOSCTL=${TALOSCTL:-$(make -s print-TALOSCTL)}.
@@ -94,10 +96,14 @@ CILIUM_VERSION := 1.20.1
 FRR_VERSION        := 10.7.1
 FRR_ROUTER_VERSION := 10.3.4
 # Debian release for the upstream router. Codename and major version describe the same release
-# (13 == trixie); keep them in step.
-DEBIAN_RELEASE   := trixie
-DEBIAN_VERSION   := 13
-DEBIAN_IMAGE_URL := https://cloud.debian.org/images/cloud/$(DEBIAN_RELEASE)/latest/debian-$(DEBIAN_VERSION)-generic-arm64.qcow2
+# (13 == trixie); keep them in step. The cloud image is pinned to a dated build and verified
+# against its SHA-512 ('make deps-bump DEPS=debian-image' moves both together); 'latest/' would
+# change under a lab that is rebuilt from the same commit.
+DEBIAN_RELEASE      := trixie
+DEBIAN_VERSION      := 13
+DEBIAN_IMAGE_BUILD  := 20261015-2632
+DEBIAN_IMAGE_SHA512 := a34e1c1eea1fbb9ad31ebdfc6c776d1d579ce9e3d740ab10549ebcdca6fe1a46c28e0a42cbcdf1eb561795776733c178f6e816fe1a2cb60d26ffc56c07f915c4
+DEBIAN_IMAGE_URL    := https://cloud.debian.org/images/cloud/$(DEBIAN_RELEASE)/$(DEBIAN_IMAGE_BUILD)/debian-$(DEBIAN_VERSION)-generic-arm64-$(DEBIAN_IMAGE_BUILD).qcow2
 # Default schematic (no extensions) from Talos Image Factory. The nocloud variant reads machine
 # config from a CIDATA ISO at boot.
 TALOS_SCHEMATIC := 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
@@ -182,14 +188,15 @@ TALOS_GEN_DIR   := talos/generated
 CLOUD_INIT_DIR  := cloud-init
 MANIFEST_DIR    := manifests
 TEST_DIR        := tests
+SCRIPT_DIR      := scripts
 # Pidfiles, serial console sockets and the VDE control socket. Kept short because unix socket
 # paths are limited to 104 bytes on macOS; cleared on reboot together with the VMs.
 RUN_DIR ?= /tmp/$(CLUSTER_NAME)
 DIRS := $(IMAGE_DIR)/ $(DISK_DIR)/ $(TALOS_GEN_DIR)/ $(RUN_DIR)/
 
-DEBIAN_IMAGE  := $(IMAGE_DIR)/debian-$(DEBIAN_VERSION)-generic-arm64.qcow2
-# The Talos version is part of the filename so bumping TALOS_VERSION downloads a new image instead
-# of silently reusing the old one.
+# The Debian build and the Talos version are part of the filenames so a bump downloads a new image
+# instead of silently reusing the old one.
+DEBIAN_IMAGE  := $(IMAGE_DIR)/debian-$(DEBIAN_VERSION)-generic-arm64-$(DEBIAN_IMAGE_BUILD).qcow2
 TALOS_IMAGE   := $(IMAGE_DIR)/talos-$(TALOS_VERSION)-nocloud-arm64.qcow2
 TALOS_RAW     := $(TALOS_IMAGE:.qcow2=.raw)
 TALOS_RAW_ZST := $(TALOS_RAW).zst
@@ -272,9 +279,11 @@ check-tools: ## Verify talosctl/kubectl/cilium-cli match the pinned versions
 .PHONY: images vms
 images: $(DEBIAN_IMAGE) $(TALOS_IMAGE) ## Download base VM images (Debian + Talos)
 
-# Debian cloud image for the upstream router.
+# Debian cloud image for the upstream router. A digest mismatch fails the recipe, and
+# .DELETE_ON_ERROR removes the file so the next run downloads it again.
 $(DEBIAN_IMAGE): | $(IMAGE_DIR)/
 	$(CURL) $(CURL_FLAGS) -o $@ $(DEBIAN_IMAGE_URL)
+	echo '$(DEBIAN_IMAGE_SHA512)  $@' | $(SHASUM) -a 512 -c -
 
 # Talos nocloud image: zstd-compressed raw from Image Factory -> raw -> qcow2. Make deletes the
 # intermediates after a successful conversion and does not re-download them while the qcow2 exists.
@@ -527,6 +536,25 @@ test: lint validate ## lint + validate (what CI runs on every push)
 
 test-e2e: ## End-to-end checks against the running lab
 	$(TEST_DIR)/e2e.sh
+
+##@ Dependencies
+
+# scripts/deps.yaml lists every pin, its upstream source and the files that copy it. deps-bump
+# applies each entry's default_level (patch for the cluster, minor for tools) unless LEVEL is set,
+# never crosses a recorded constraint, and runs sync-versions afterwards. Judgment calls
+# (compatibility, release notes, the live upgrade) are in .claude/skills/bump-deps/SKILL.md.
+DEPS    ?=
+LEVEL   ?=
+DRY_RUN ?=
+.PHONY: deps-outdated deps-bump sync-versions
+deps-outdated: ## List pinned dependencies with newer upstream releases
+	$(SCRIPT_DIR)/deps.sh outdated $(DEPS)
+
+deps-bump: ## Bump pins (DEPS="talos cilium" LEVEL=patch|minor|major DRY_RUN=1), then sync copies
+	$(SCRIPT_DIR)/deps.sh bump $(if $(LEVEL),--level $(LEVEL)) $(if $(DRY_RUN),--dry-run) $(DEPS)
+
+sync-versions: ## Copy pinned versions into the manifests, cloud-init and README
+	$(SCRIPT_DIR)/deps.sh sync
 
 ##@ Access and debugging
 

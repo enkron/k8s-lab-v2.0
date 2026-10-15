@@ -17,7 +17,7 @@ log "rumdl"
 rumdl check .
 
 log "shellcheck"
-shellcheck -x tests/*.sh
+shellcheck -x tests/*.sh scripts/*.sh
 
 if have actionlint; then
   log "actionlint"

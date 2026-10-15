@@ -91,6 +91,27 @@ nuke` also removes images and secrets. After bumping `TALOS_VERSION` the new
 base image is downloaded on `make images`, but existing disks are not
 recreated: run `make clean vms`. Then continue with the quick start.
 
+## Updating dependencies
+
+`scripts/deps.yaml` lists every pinned version (cluster components, the
+Debian image build, the e2e test image, CI tools), where to look for new
+releases upstream, and which files copy each value.
+
+| Target | What it does |
+|---|---|
+| `make deps-outdated` | newer upstream releases per pin, by update level |
+| `make deps-bump` | move pins to the newest allowed release, then sync |
+| `make sync-versions` | copy pinned values into manifests, cloud-init, README |
+
+`make deps-bump` applies patch releases of the cluster components and minor
+releases of tools by default. `DEPS="talos cilium"` selects entries,
+`LEVEL=minor` raises the level, `DRY_RUN=1` previews. A `constraint` in the
+registry (Kubernetes below the newest minor that stable Cilium is tested
+against) is never crossed; moving it is a review decision. In Claude Code,
+`/bump-deps` runs the whole process: compatibility and release-note review,
+the bump, `make test`, docs, and the live-lab commands to run afterwards. CI
+posts the `deps-outdated` table to the job summary every Monday.
+
 ## Testing
 
 | Target | What it checks | Needs |
@@ -130,6 +151,7 @@ k8s_lab/
 │   ├── cilium-values.yaml    # Helm values (native routing, BGP, Talos)
 │   ├── cilium-bgp.yaml       # CiliumBGPClusterConfig CRDs
 │   └── frr-route-reflector.yaml  # FRR DaemonSet + ConfigMap
+├── scripts/                  # deps.yaml registry + deps.sh (bump/sync)
 ├── tests/                    # make test (static) and make test-e2e (live lab)
 ├── .github/workflows/ci.yaml # runs make test on every push
 └── docs/
