@@ -17,7 +17,7 @@ extraArgs:
 # SANs for TLS validation from all access paths:
 #   - 192.168.100.10: SLIRP management NIC (host port forwarding)
 #   - fd00:100::10: internal VDE network (inter-VM, cluster endpoint)
-#   - 127.0.0.1: host kubectl via SLIRP hostfwd (tcp::6443 -> :6443)
+#   - 127.0.0.1: host kubectl via SLIRP hostfwd (tcp:127.0.0.1:6443 -> :6443)
 certExtraSANs:
   - 192.168.100.10
   - fd00:100::10

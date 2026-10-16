@@ -67,11 +67,14 @@ behind `TALOS_VERSION` after a bump, override the package or point
   own public key there before `make seed`, or `make ssh-upstream` is refused
   (password login is disabled). Nothing else needs SSH: the Talos nodes have
   no sshd and `make test-e2e` does not use it.
-- **Free host ports**: QEMU forwards host ports 50000 (Talos API,
-  control-plane-1), 50001/50002 (Talos API, workers), 6443 (Kubernetes API)
-  and 2200 (SSH to the router). A VM fails to start if its port is taken.
-  The forwards listen on all host interfaces, not only loopback, so these
-  services are reachable from your network (mTLS / key auth still apply).
+- **Free host ports**: QEMU forwards `127.0.0.1` ports 50000 (Talos API,
+  control-plane-1), 6443 (Kubernetes API) and 2200 (SSH to the router); a VM
+  fails to start if its port is taken. The forwards listen on loopback only,
+  so nothing is exposed to your network. To reach the lab from another
+  machine, tunnel through SSH to this host (e.g. `ssh -L 6443:127.0.0.1:6443
+  -L 50000:127.0.0.1:50000 <mac>`); `make HOSTFWD_ADDR=0.0.0.0 up` opts into
+  listening on every interface. The workers have no forwards: talosctl
+  reaches them through control-plane-1.
 - **Tools**: see [Requirements](#requirements); `make check-tools` covers the
   version-sensitive ones.
 
@@ -103,7 +106,7 @@ See `make help` for all targets.
 | kubectl | `make kubeconfig` adds and selects the `admin@k8s-lab` context in `~/.kube/config` |
 | talosctl by hand | `export TALOSCONFIG=$PWD/talos/generated/talosconfig` (make targets set it themselves) |
 | Cluster health / TUI | `make talos-health`, `make talos-dashboard` |
-| Router shell | `make ssh-upstream` (`ssh -p 2200 k8s@localhost`) |
+| Router shell | `make ssh-upstream` (`ssh -p 2200 k8s@127.0.0.1`) |
 | Serial console | `make console-<node>`, e.g. `make console-worker-1` (any VM, also before boot completes) |
 | VM state | `make status` |
 | Stop / resume | `make down`, later `make up`: the VMs boot from their disks, no new `bootstrap` |

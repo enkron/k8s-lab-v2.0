@@ -133,13 +133,20 @@ TALOS_API_PORT := 50000
 K8S_API_PORT   := 6443
 SSH_PORT       := 2200
 SSH_USER       := k8s
+# Host address the port forwards listen on. Loopback only: an empty address makes QEMU listen on
+# every interface, which puts the Talos API (unauthenticated while a node sits in maintenance
+# mode), the Kubernetes API and router SSH on the LAN. talosconfig, kubeconfig and the API
+# certificate SANs all use 127.0.0.1. For access from another machine prefer an SSH tunnel to
+# this host; HOSTFWD_ADDR=0.0.0.0 opts back into listening everywhere.
+HOSTFWD_ADDR ?= 127.0.0.1
+# HOSTFWD_<node>: space-separated QEMU hostfwd specs, joined with commas at launch; empty for none.
 
 SMP_upstream-router          := 1
 MEM_upstream-router          := 512M
 MAC_MGMT_upstream-router     := 52:54:00:00:01:00
 MAC_INTERNAL_upstream-router := 52:54:00:00:02:00
 IP_MGMT_upstream-router      := 192.168.100.13
-HOSTFWD_upstream-router      := hostfwd=tcp::$(SSH_PORT)-$(IP_MGMT_upstream-router):22
+HOSTFWD_upstream-router      := hostfwd=tcp:$(HOSTFWD_ADDR):$(SSH_PORT)-$(IP_MGMT_upstream-router):22
 
 SMP_control-plane-1          := 2
 MEM_control-plane-1          := 4G
@@ -147,9 +154,8 @@ MAC_MGMT_control-plane-1     := 52:54:00:00:01:01
 MAC_INTERNAL_control-plane-1 := 52:54:00:00:02:01
 IP_MGMT_control-plane-1      := 192.168.100.10
 IP_INTERNAL_control-plane-1  := fd00:100::10
-# Two forwards; built in two steps because a backslash continuation would insert a space.
-HOSTFWD_control-plane-1 := hostfwd=tcp::$(TALOS_API_PORT)-$(IP_MGMT_control-plane-1):50000
-HOSTFWD_control-plane-1 := $(HOSTFWD_control-plane-1),hostfwd=tcp::$(K8S_API_PORT)-$(IP_MGMT_control-plane-1):6443
+HOSTFWD_control-plane-1      := hostfwd=tcp:$(HOSTFWD_ADDR):$(TALOS_API_PORT)-$(IP_MGMT_control-plane-1):50000 \
+                                hostfwd=tcp:$(HOSTFWD_ADDR):$(K8S_API_PORT)-$(IP_MGMT_control-plane-1):6443
 
 SMP_worker-1          := 2
 MEM_worker-1          := 4G
@@ -157,7 +163,9 @@ MAC_MGMT_worker-1     := 52:54:00:00:01:02
 MAC_INTERNAL_worker-1 := 52:54:00:00:02:02
 IP_MGMT_worker-1      := 192.168.100.11
 IP_INTERNAL_worker-1  := fd00:100::11
-HOSTFWD_worker-1      := hostfwd=tcp::50001-$(IP_MGMT_worker-1):50000
+# No forwards on the workers: talosctl reaches them through control-plane-1 (internal IPs). To
+# debug a worker that never joined, use its serial console (make console-<node>).
+HOSTFWD_worker-1      :=
 
 SMP_worker-2          := 2
 MEM_worker-2          := 4G
@@ -165,7 +173,7 @@ MAC_MGMT_worker-2     := 52:54:00:00:01:03
 MAC_INTERNAL_worker-2 := 52:54:00:00:02:03
 IP_MGMT_worker-2      := 192.168.100.12
 IP_INTERNAL_worker-2  := fd00:100::12
-HOSTFWD_worker-2      := hostfwd=tcp::50002-$(IP_MGMT_worker-2):50000
+HOSTFWD_worker-2      :=
 
 # --- Cluster ---
 
@@ -442,7 +450,7 @@ $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN
 		-drive file=$(filter %.iso,$|),if=virtio,format=raw \
 		-device virtio-rng-pci \
 		$(SMBIOS) \
-		-netdev user,id=mgmt,net=$(MGMT_NET),$(HOSTFWD_$*) \
+		-netdev user,id=mgmt,net=$(MGMT_NET)$(addprefix $(comma),$(call join-comma,$(HOSTFWD_$*))) \
 		-device virtio-net-pci,netdev=mgmt,mac=$(MAC_MGMT_$*) \
 		-netdev vde,id=internal,sock=$(VDE_CTL) \
 		-device virtio-net-pci,netdev=internal,mac=$(MAC_INTERNAL_$*) \
@@ -561,7 +569,7 @@ sync-versions: ## Copy pinned versions into the manifests, cloud-init and README
 .PHONY: ssh-upstream talos-dashboard talos-health $(NODES:%=console-%)
 # Only the Debian VM has SSH; Talos nodes have no sshd.
 ssh-upstream: ## SSH to the upstream router (Debian)
-	ssh -p $(SSH_PORT) $(SSH_USER)@localhost
+	ssh -p $(SSH_PORT) $(SSH_USER)@127.0.0.1
 
 # Serial console via the QEMU unix socket. Works for all VMs including Talos (boot messages,
 # maintenance mode prompts).

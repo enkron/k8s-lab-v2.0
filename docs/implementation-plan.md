@@ -275,11 +275,10 @@ Each VM has two NICs:
 
 - QEMU user-mode networking with port forwarding
 - Static addressing on `192.168.100.0/24`
-- Host access via forwarded ports:
+- Host access via ports forwarded on `127.0.0.1` only (`HOSTFWD_ADDR`):
   - upstream-router: SSH 2200
   - control-plane-1: K8s API 6443, Talos API 50000
-  - worker-1: Talos API 50001
-  - worker-2: Talos API 50002
+  - Workers: no forwards; talosctl reaches them through control-plane-1
   - No SSH on Talos nodes (immutable OS, no sshd)
 
 **Network 2: Internal (L3 Routed)**
