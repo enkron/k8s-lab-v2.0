@@ -7,7 +7,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
-need helm kubeconform curl yq
+need helm kubeconform curl yq jq
 CILIUM_VERSION=$(mkvar CILIUM_VERSION)
 K8S_VERSION=$(mkvar KUBERNETES_VERSION)
 cache=$REPO_ROOT/.cache
@@ -52,5 +52,17 @@ check "cilium agent: KubePrism API endpoint (localhost:7445)" agent_env KUBERNET
 log "kubeconform on repo manifests"
 check "manifests/*.yaml and tests/manifests/*.yaml pass kubeconform (incl. Cilium BGP CRDs)" \
   kc manifests/cilium-bgp.yaml manifests/frr-route-reflector.yaml tests/manifests/e2e-workload.yaml
+
+# The schema allows a family without an advertisements selector, but such a family advertises
+# nothing: the sessions come up and the worker pod CIDRs never reach the route reflector.
+bgp_families_advertise() {
+  yq ea -o json '[.]' manifests/cilium-bgp.yaml | jq -e '
+    [.[] | select(.kind == "CiliumBGPAdvertisement") | .metadata.labels // {}] as $ads
+    | [.[] | select(.kind == "CiliumBGPPeerConfig") | .spec.families[]]
+    | length > 0 and all(
+        (.advertisements.matchLabels // {} | to_entries) as $sel
+        | ($sel | length > 0) and any($ads[]; . as $l | $sel | all(.value == $l[.key])))' >/dev/null
+}
+check "cilium-bgp.yaml: every BGP peer family selects a CiliumBGPAdvertisement" bgp_families_advertise
 
 summary validate-manifests

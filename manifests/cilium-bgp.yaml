@@ -25,11 +25,19 @@ kind: CiliumBGPPeerConfig
 metadata:
   name: rr-peer
 spec:
+  # A family sends only the CiliumBGPAdvertisements its selector matches; with no selector
+  # the session comes up but advertises nothing.
   families:
     - afi: ipv4
       safi: unicast
+      advertisements:
+        matchLabels:
+          advertise: bgp
     - afi: ipv6
       safi: unicast
+      advertisements:
+        matchLabels:
+          advertise: bgp
   gracefulRestart:
     enabled: true
     restartTimeSeconds: 120
@@ -38,6 +46,8 @@ apiVersion: cilium.io/v2
 kind: CiliumBGPAdvertisement
 metadata:
   name: pod-cidrs
+  labels:
+    advertise: bgp
 spec:
   advertisements:
     - advertisementType: PodCIDR
