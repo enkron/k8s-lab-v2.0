@@ -112,7 +112,7 @@ bootstrapped cluster.
 | talosctl by hand | `export TALOSCONFIG=$PWD/talos/generated/talosconfig` (make targets set it themselves) |
 | Cluster health / TUI | `make talos-health`, `make talos-dashboard` |
 | Router shell | `make ssh-upstream` (`ssh -p 2200 k8s@127.0.0.1`) |
-| Hubble flows | `hubble observe -P` with the TLS settings below |
+| Hubble flows | `eval "$(make hubble-ca)"`, then `hubble observe -P` |
 | Serial console | `make console-<node>`, e.g. `make console-worker-1` (any VM, also before boot completes) |
 | VM state | `make status` |
 | Stop / resume | `make down`, later `make up`: the VMs boot from their disks, no new `bootstrap` |
@@ -123,17 +123,19 @@ bootstrap, requests for the workers are proxied through it, addressed by
 their internal IPs (`fd00:100::11`, `fd00:100::12`).
 
 Hubble Relay serves its API over TLS with a certificate for
-`*.hubble-relay.cilium.io`, signed by the CA that Helm generates. Fetch the
-CA once per cluster (`helm upgrade` keeps it, a rebuilt cluster gets a new
-one), then let `hubble` port-forward to the relay itself:
+`*.hubble-relay.cilium.io`, signed by the CA that Helm generates (`helm
+upgrade` keeps it, a rebuilt cluster gets a new one). `make hubble-ca` saves
+that CA to `talos/generated/hubble-ca.crt` and prints the `HUBBLE_TLS*`
+exports for the `hubble` CLI, so `eval` sets up the current shell; `-P` makes
+`hubble` port-forward to the relay itself:
 
 ```sh
-kubectl -n kube-system get secret hubble-relay-server-certs \
-  -o jsonpath='{.data.ca\.crt}' | base64 -d > talos/generated/hubble-ca.crt
-export HUBBLE_TLS=true HUBBLE_TLS_SERVER_NAME=instance.hubble-relay.cilium.io \
-  HUBBLE_TLS_CA_CERT_FILES=$PWD/talos/generated/hubble-ca.crt
+eval "$(make hubble-ca)"
 hubble observe -P --namespace e2e-test
 ```
+
+The settings live in the shell, not in the global `hubble config`, so other
+clusters are not affected.
 
 ## Rebuilding after a version bump
 

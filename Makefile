@@ -224,6 +224,7 @@ CLOUD_INIT_SEED    := $(CLOUD_INIT_DIR)/upstream-router/seed.iso
 # Not KUBECONFIG: a make variable of that name would be exported over the user's own setting.
 # tests/e2e.sh defaults to this path.
 KUBECONFIG_FILE    := $(TALOS_GEN_DIR)/kubeconfig
+HUBBLE_CA_FILE     := $(TALOS_GEN_DIR)/hubble-ca.crt
 
 VDE_CTL  := $(RUN_DIR)/vde.ctl
 VDE_PID  := $(RUN_DIR)/vde.pid
@@ -607,7 +608,7 @@ sync-versions: ## Copy pinned versions into the manifests, cloud-init and README
 
 ##@ Access and debugging
 
-.PHONY: ssh-upstream talos-dashboard talos-health $(NODES:%=console-%)
+.PHONY: ssh-upstream talos-dashboard talos-health hubble-ca $(NODES:%=console-%)
 # Only the Debian VM has SSH; Talos nodes have no sshd.
 ssh-upstream: ## SSH to the upstream router (Debian)
 	ssh -p $(SSH_PORT) $(SSH_USER)@127.0.0.1
@@ -620,6 +621,20 @@ $(NODES:%=console-%): console-%: ## Serial console via QEMU socket (console-<nod
 # After bootstrap, the control plane proxies requests to the workers.
 talos-dashboard: $(TALOSCONFIG) ## Interactive Talos TUI dashboard across all Kubernetes nodes
 	$(TALOSCTL) dashboard -n $(call join-comma,$(IP_MGMT_control-plane-1) $(WORKER_INTERNAL_IPS))
+
+# Hubble Relay serves TLS with a certificate signed by the CA that Helm generates for Cilium: kept
+# across helm upgrade, new with every cluster, so this always fetches it again. Only the export
+# line goes to stdout (every recipe line is silent), so 'eval "$(make hubble-ca)"' sets up the
+# hubble CLI in the current shell. A jsonpath on a missing key prints nothing and exits 0, hence
+# the empty check before the file is written.
+hubble-ca: ## Fetch the Hubble Relay CA; eval "$(make hubble-ca)" sets the hubble TLS env
+	@[ -f $(KUBECONFIG_FILE) ] || { echo "hubble-ca: $(KUBECONFIG_FILE) missing, run 'make kubeconfig' first" >&2; exit 1; }
+	@ca=$$($(KUBECTL) --kubeconfig $(KUBECONFIG_FILE) -n kube-system \
+		get secret hubble-relay-server-certs -o jsonpath='{.data.ca\.crt}'); \
+	[ -n "$$ca" ] || { echo "hubble-ca: no CA in secret hubble-relay-server-certs (is hubble.relay.tls.server enabled?)" >&2; exit 1; }; \
+	printf '%s' "$$ca" | base64 -d > $(HUBBLE_CA_FILE)
+	@echo "hubble-ca: wrote $(HUBBLE_CA_FILE)" >&2
+	@echo "export HUBBLE_TLS=true HUBBLE_TLS_SERVER_NAME=instance.hubble-relay.cilium.io HUBBLE_TLS_CA_CERT_FILES='$(CURDIR)/$(HUBBLE_CA_FILE)'"
 
 # Worker IPs use the internal network (fd00:100::/64): SLIRP IPs are per-VM isolated NAT, so the
 # control plane can only reach workers via VDE.
@@ -637,7 +652,7 @@ talos-health: $(TALOSCONFIG) ## Check cluster health (etcd, kubelet, node readin
 clean: down ## Remove disks, generated configs, seed ISOs and kubeconfig (keeps images, secrets)
 	rm -rf $(DISK_DIR)
 	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_NODE_CONFIGS) $(TALOS_META_DATA) \
-		$(TALOS_SEEDS) $(KUBECONFIG_FILE) $(CLOUD_INIT_DIR)/*/seed.iso
+		$(TALOS_SEEDS) $(KUBECONFIG_FILE) $(HUBBLE_CA_FILE) $(CLOUD_INIT_DIR)/*/seed.iso
 
 nuke: clean ## Remove everything including base images and the Talos secrets bundle (new PKI)
 	rm -rf $(IMAGE_DIR) $(TALOS_GEN_DIR)
