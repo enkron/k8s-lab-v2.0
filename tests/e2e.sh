@@ -89,8 +89,9 @@ done
 
 log "6. Route propagation"
 node_pod_cidrs() { kubectl get node "$1" -o json | jq -r '.spec.podCIDRs[]'; }
-# control-plane-1's CIDRs are originated by the RR's static `network` statements, so this
-# also catches drift between the ConfigMap and the CIDR Kubernetes actually allocated.
+# control-plane-1's CIDRs are originated by the RR's `network` statements, which `make frr-rr`
+# renders from the Node object, so this also catches a ConfigMap that is stale against the
+# CIDRs Kubernetes actually allocated.
 for n in control-plane-1 $WORKERS; do
   for cidr in $(node_pod_cidrs "$n"); do
     afi=ipv4

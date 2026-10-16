@@ -7,6 +7,12 @@
 # minor (tests/check-versions.sh enforces both against FRR_VERSION in the Makefile). Note
 # that FRR >= 10.5 rejects AS_SET paths by default (bgp reject-as-sets), independent of the
 # header; the lab originates no AS_SETs so this has no effect here.
+#
+# control-plane-1 runs no Cilium BGP session (this pod holds port 179 there), so the RR
+# originates that node's pod CIDRs itself. kube-controller-manager hands out node CIDRs in
+# registration order, which races between the nodes, so the CIDRs are not fixed:
+# `make frr-rr` reads them from the Node object and substitutes @CP_POD_CIDR_IPV4@ and
+# @CP_POD_CIDR_IPV6@ before applying. Do not `kubectl apply` this file directly.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -58,7 +64,7 @@ data:
      neighbor fd00:100::12 description worker-2
      !
      address-family ipv4 unicast
-      network 10.244.0.0/24
+      network @CP_POD_CIDR_IPV4@
       neighbor fd00:100::1 activate
       neighbor fd00:100::11 activate
       neighbor fd00:100::11 route-reflector-client
@@ -69,7 +75,7 @@ data:
      exit-address-family
      !
      address-family ipv6 unicast
-      network fd00:244:0::/64
+      network @CP_POD_CIDR_IPV6@
       neighbor fd00:100::1 activate
       neighbor fd00:100::11 activate
       neighbor fd00:100::11 route-reflector-client

@@ -554,9 +554,19 @@ cilium-install: ## Install or upgrade Cilium CNI via Helm (waits for the Kuberne
 		-f $(MANIFEST_DIR)/cilium-values.yaml
 
 # FRR as a privileged pod on control-plane-1 for BGP route reflection. Uses hostNetwork - no CNI
-# dependency. Peers with upstream-router (eBGP) and workers (iBGP).
+# dependency. Peers with upstream-router (eBGP) and workers (iBGP). The RR originates
+# control-plane-1's pod CIDRs, which depend on node registration order: they are read from the
+# Node object and substituted into the manifest's @CP_POD_CIDR_IPV4@/@CP_POD_CIDR_IPV6@. A
+# ConfigMap change does not restart FRR; on a running lab follow with
+# 'kubectl -n kube-system rollout restart ds/frr-route-reflector'.
 frr-rr: ## Deploy the FRR Route Reflector pod on control-plane-1
-	$(KUBECTL) apply -f $(MANIFEST_DIR)/frr-route-reflector.yaml
+	$(call wait-for,control-plane-1 pod CIDRs,$(KUBECTL) get node control-plane-1 -o json | $(JQ) -e '.spec.podCIDRs | length == 2')
+	@node=$$($(KUBECTL) get node control-plane-1 -o json); \
+	v4=$$($(JQ) -r '.spec.podCIDRs[] | select(contains(":") | not)' <<<"$$node"); \
+	v6=$$($(JQ) -r '.spec.podCIDRs[] | select(contains(":"))' <<<"$$node"); \
+	echo "frr-rr: control-plane-1 pod CIDRs $$v4 $$v6"; \
+	sed -e "s|@CP_POD_CIDR_IPV4@|$$v4|" -e "s|@CP_POD_CIDR_IPV6@|$$v6|" \
+		$(MANIFEST_DIR)/frr-route-reflector.yaml | $(KUBECTL) apply -f -
 
 # Cilium BGP on worker nodes: iBGP peering with the FRR Route Reflector on control-plane-1. The
 # CiliumBGP* CRDs are not in the Helm chart: cilium-operator registers them once it runs, a minute

@@ -591,7 +591,9 @@ The FRR pod:
 - Peers with upstream-router (`fd00:100::1`) via eBGP (AS 64513)
 - Peers with worker-1 (`fd00:100::11`) and worker-2 (`fd00:100::12`) via iBGP
   (AS 64512) as route-reflector-client
-- Advertises control-plane-1's pod CIDR (`10.244.0.0/24`, `fd00:244:0::/64`)
+- Advertises control-plane-1's pod CIDRs, which `make frr-rr` reads from the
+  Node object: Kubernetes allocates node CIDRs in registration order, so the
+  table in 6.2 is only one possible assignment
 - Reflects routes between workers and upstream
 
 Verify FRR is running:

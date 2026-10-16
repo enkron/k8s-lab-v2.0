@@ -18,7 +18,11 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/rr" "$tmp/router"
-yq 'select(.kind == "ConfigMap") | .data["frr.conf"]' manifests/frr-route-reflector.yaml > "$tmp/rr/frr.conf"
+# The RR's control-plane-1 pod CIDRs are placeholders filled by `make frr-rr`; any CIDR of
+# the right family checks the syntax.
+yq 'select(.kind == "ConfigMap") | .data["frr.conf"]' manifests/frr-route-reflector.yaml \
+  | sed -e 's|@CP_POD_CIDR_IPV4@|10.244.0.0/24|' -e 's|@CP_POD_CIDR_IPV6@|fd00:244::/64|' \
+  > "$tmp/rr/frr.conf"
 yq '.write_files[] | select(.path == "/etc/frr/frr.conf") | .content' cloud-init/upstream-router/user-data \
   > "$tmp/router/frr.conf"
 
