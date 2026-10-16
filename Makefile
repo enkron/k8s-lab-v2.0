@@ -240,10 +240,10 @@ define wait-for
 @echo "Waiting for $(1) (up to $(WAIT_TIMEOUT)s)..."; \
 	until $(2) >/dev/null 2>&1; do \
 		[ $$SECONDS -lt $(WAIT_TIMEOUT) ] \
-			|| { echo "$(1) not reachable after $(WAIT_TIMEOUT)s; 'make status', 'make console-<node>'" >&2; exit 1; }; \
+			|| { echo "$(1): not ready after $(WAIT_TIMEOUT)s; check 'make status', 'make console-<node>'" >&2; exit 1; }; \
 		sleep 5; \
 	done; \
-	echo "$(1) is up"
+	echo "$(1): ready"
 endef
 
 empty :=
@@ -546,8 +546,12 @@ cilium-install: ## Install or upgrade Cilium CNI via Helm (waits for the Kuberne
 frr-rr: ## Deploy the FRR Route Reflector pod on control-plane-1
 	$(KUBECTL) apply -f $(MANIFEST_DIR)/frr-route-reflector.yaml
 
-# Cilium BGP on worker nodes: iBGP peering with the FRR Route Reflector on control-plane-1.
-cilium-bgp: ## Apply Cilium iBGP peering CRDs for workers
+# Cilium BGP on worker nodes: iBGP peering with the FRR Route Reflector on control-plane-1. The
+# CiliumBGP* CRDs are not in the Helm chart: cilium-operator registers them once it runs, a minute
+# or so after cilium-install. A server-side dry run of the manifest succeeds once every kind in it
+# resolves (and persists nothing), so the wait needs no CRD list of its own.
+cilium-bgp: ## Apply Cilium iBGP peering CRDs for workers (waits for the CRDs)
+	$(call wait-for,Cilium BGP CRDs,$(KUBECTL) apply --dry-run=server -f $(MANIFEST_DIR)/cilium-bgp.yaml)
 	$(KUBECTL) apply -f $(MANIFEST_DIR)/cilium-bgp.yaml
 
 ##@ Tests

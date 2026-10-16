@@ -92,15 +92,17 @@ make bootstrap      # initialize etcd + control plane (waits for the Talos API)
 make kubeconfig     # merge kubeconfig into ~/.kube/config
 make cilium-install # install Cilium CNI (waits for the Kubernetes API)
 make frr-rr         # deploy FRR Route Reflector pod
-make cilium-bgp     # configure iBGP peering on workers
+make cilium-bgp     # configure iBGP peering on workers (waits for the CRDs)
 make talos-health   # verify cluster health
 make test-e2e       # end-to-end checks (BGP, routes, dual-stack connectivity)
 ```
 
 See `make help` for all targets. The steps can be chained in one `make`
-call: `bootstrap` and `cilium-install` wait for their API (up to
-`WAIT_TIMEOUT=300` seconds) instead of failing while the VMs are still
-booting, and `bootstrap` is a no-op on an already bootstrapped cluster.
+call: `bootstrap`, `cilium-install` and `cilium-bgp` wait for what they
+depend on (Talos API, Kubernetes API, the Cilium BGP CRDs that
+cilium-operator registers; up to `WAIT_TIMEOUT=300` seconds each) instead of
+failing while it comes up, and `bootstrap` is a no-op on an already
+bootstrapped cluster.
 
 ## Using the lab
 
