@@ -87,17 +87,20 @@ make vms            # create per-node CoW disks
 make talos-gen      # generate Talos machine configs
 make talos-configs  # patch per-node identity (MACs, IPs)
 make seed           # build CIDATA ISOs
-make up             # start all VMs (wait ~90s for boot)
-make bootstrap      # initialize etcd + control plane
+make up             # start all VMs
+make bootstrap      # initialize etcd + control plane (waits for the Talos API)
 make kubeconfig     # merge kubeconfig into ~/.kube/config
-make cilium-install # install Cilium CNI
+make cilium-install # install Cilium CNI (waits for the Kubernetes API)
 make frr-rr         # deploy FRR Route Reflector pod
 make cilium-bgp     # configure iBGP peering on workers
 make talos-health   # verify cluster health
 make test-e2e       # end-to-end checks (BGP, routes, dual-stack connectivity)
 ```
 
-See `make help` for all targets.
+See `make help` for all targets. The steps can be chained in one `make`
+call: `bootstrap` and `cilium-install` wait for their API (up to
+`WAIT_TIMEOUT=300` seconds) instead of failing while the VMs are still
+booting, and `bootstrap` is a no-op on an already bootstrapped cluster.
 
 ## Using the lab
 

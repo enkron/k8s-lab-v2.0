@@ -229,6 +229,23 @@ VDE_CTL  := $(RUN_DIR)/vde.ctl
 VDE_PID  := $(RUN_DIR)/vde.pid
 PIDFILES := $(NODES:%=$(RUN_DIR)/%.pid)
 
+# How long the cluster lifecycle targets wait for an API to come up, in seconds. Talos needs ~90s
+# from 'make up' to serve its API, kube-apiserver another minute or two after bootstrap.
+WAIT_TIMEOUT ?= 300
+# $(call wait-for,<what>,<command>): recipe line that retries <command> every 5s until it succeeds
+# or WAIT_TIMEOUT runs out. Each attempt is bounded by the command's own timeout. The QEMU port
+# forwards accept TCP before the guest listens, so only a real API call proves readiness, not a
+# port check. <command> must not contain a comma ($(call) splits on them).
+define wait-for
+@echo "Waiting for $(1) (up to $(WAIT_TIMEOUT)s)..."; \
+	until $(2) >/dev/null 2>&1; do \
+		[ $$SECONDS -lt $(WAIT_TIMEOUT) ] \
+			|| { echo "$(1) not reachable after $(WAIT_TIMEOUT)s; 'make status', 'make console-<node>'" >&2; exit 1; }; \
+		sleep 5; \
+	done; \
+	echo "$(1) is up"
+endef
+
 empty :=
 space := $(empty) $(empty)
 comma := ,
@@ -487,10 +504,15 @@ status: ## Show VM and VDE switch state (running / stopped / stale pidfile)
 ##@ Cluster lifecycle
 
 .PHONY: bootstrap kubeconfig cilium-install frr-rr cilium-bgp
-# Initialize etcd and the Kubernetes control plane. Run once on first setup. Endpoint
-# (127.0.0.1:50000) and default node are set in talosconfig.
-bootstrap: $(TALOSCONFIG) ## Bootstrap etcd + control plane (once)
-	$(TALOSCTL) bootstrap
+# Initialize etcd and the Kubernetes control plane. Endpoint (127.0.0.1:50000) and default node
+# are set in talosconfig. Waits for the Talos API first, so 'make up bootstrap' works without
+# timing it. Idempotent: on a bootstrapped cluster Talos answers AlreadyExists (etcd data
+# directory is not empty), reported as done rather than as an error.
+bootstrap: $(TALOSCONFIG) ## Bootstrap etcd + control plane (waits for the Talos API; no-op if done)
+	$(call wait-for,Talos API on control-plane-1,$(TALOSCTL) version)
+	@out=$$($(TALOSCTL) bootstrap 2>&1) && { [ -z "$$out" ] || echo "$$out"; echo "bootstrap: started"; } \
+		|| { case $$out in *AlreadyExists*) echo "bootstrap: already done";; \
+		     *) echo "$$out" >&2; exit 1;; esac; }
 
 # Fetch kubeconfig into a file, rewrite the API server endpoint to the host-accessible port
 # forward, then merge into the default kubeconfig. Safe for multi-cluster setups: only the
@@ -507,7 +529,11 @@ kubeconfig: $(TALOSCONFIG) ## Retrieve kubeconfig from Talos and merge it into ~
 
 # Cilium CNI with eBPF datapath, kube-proxy replacement, and BGP. 'upgrade --install' is
 # idempotent: re-running applies value changes instead of failing on an existing release.
-cilium-install: ## Install or upgrade Cilium CNI via Helm
+# kube-apiserver comes up a minute or two after bootstrap; /readyz answers without a CNI because the
+# control-plane static pods use host networking.
+cilium-install: ## Install or upgrade Cilium CNI via Helm (waits for the Kubernetes API)
+	@[ -f $(KUBECONFIG_FILE) ] || { echo "cilium-install: $(KUBECONFIG_FILE) missing, run 'make kubeconfig' first" >&2; exit 1; }
+	$(call wait-for,Kubernetes API,$(KUBECTL) --kubeconfig $(KUBECONFIG_FILE) get --raw /readyz)
 	$(HELM) repo add cilium https://helm.cilium.io/ 2>/dev/null || true
 	$(HELM) repo update
 	$(HELM) upgrade --install cilium cilium/cilium \

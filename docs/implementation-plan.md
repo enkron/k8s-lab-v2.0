@@ -850,7 +850,7 @@ make seed
 # Start all VMs
 make up
 
-# Wait ~90s for Talos to boot, then bootstrap Kubernetes
+# Bootstrap Kubernetes (waits for the Talos API to come up, ~90s after boot)
 make bootstrap
 make kubeconfig
 
