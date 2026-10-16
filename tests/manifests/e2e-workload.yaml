@@ -1,13 +1,15 @@
 # Test workload for tests/e2e.sh: one agnhost pod per worker (DaemonSet on the
 # bgp-policy=worker nodes) behind a dual-stack Service, IPv6 first like the cluster.
 # agnhost (Kubernetes e2e image) serves /hostname on 8080 and ships curl for the checks.
+# The pod meets the restricted Pod Security Standard, which is also what Talos's cluster default
+# warns on; nothing it does (unprivileged port, curl, agnhost connect) needs root.
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: e2e-test
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: restricted
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -27,10 +29,21 @@ spec:
     spec:
       nodeSelector:
         bgp-policy: worker
+      securityContext:
+        # The image sets no USER and so runs as root by default: pick nobody explicitly.
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: agnhost
           image: registry.k8s.io/e2e-test-images/agnhost:2.61
           args: ["netexec", "--http-port=8080"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8080
