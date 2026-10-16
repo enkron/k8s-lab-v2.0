@@ -48,6 +48,10 @@ agent_env() {
   yq -e "select(.kind == \"DaemonSet\" and .metadata.name == \"cilium\") | .spec.template.spec.containers[0].env[] | select(.name == \"$1\") | .value == \"$2\"" "$rendered" >/dev/null
 }
 check "cilium agent: KubePrism API endpoint (localhost:7445)" agent_env KUBERNETES_SERVICE_PORT 7445
+relay_tls() {
+  yq -e 'select(.kind == "ConfigMap" and .metadata.name == "hubble-relay-config") | .data["config.yaml"] | test("(?m)^tls-relay-server-cert-file: /")' "$rendered" >/dev/null
+}
+check "hubble-relay: TLS on its client API" relay_tls
 
 log "kubeconform on repo manifests"
 check "manifests/*.yaml and tests/manifests/*.yaml pass kubeconform (incl. Cilium BGP CRDs)" \

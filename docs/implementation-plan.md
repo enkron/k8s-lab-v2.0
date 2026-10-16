@@ -502,6 +502,8 @@ This runs `helm upgrade --install` (re-runnable) with Talos-specific values from
 - `bgpControlPlane.enabled: true` — enables Cilium BGP for worker peering
 - `kubeProxyReplacement: true` — eBPF replaces kube-proxy
 - `hubble.enabled: true` — flow observability
+- `hubble.relay.tls.server.enabled: true` - TLS on the Hubble Relay API, with
+  the Helm-generated Hubble CA (client setup in the README, "Using the lab")
 
 #### Step 5.2.2: Wait for Cilium to Be Ready
 
@@ -758,8 +760,8 @@ cilium bpf ct list global
 Per architecture requirements, verify packet path is traceable:
 
 ```bash
-# Trace packet path with Hubble
-hubble observe --pod <pod-name>
+# Trace packet path with Hubble (relay TLS settings: README, "Using the lab")
+hubble observe -P --pod <pod-name>
 
 # Packet capture via talosctl (replaces tcpdump over SSH)
 talosctl -n 192.168.100.11 pcap --interface eth1
