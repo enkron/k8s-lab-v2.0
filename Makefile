@@ -506,13 +506,24 @@ status: ## Show VM and VDE switch state (running / stopped / stale pidfile)
 .PHONY: bootstrap kubeconfig cilium-install frr-rr cilium-bgp
 # Initialize etcd and the Kubernetes control plane. Endpoint (127.0.0.1:50000) and default node
 # are set in talosconfig. Waits for the Talos API first, so 'make up bootstrap' works without
-# timing it. Idempotent: on a bootstrapped cluster Talos answers AlreadyExists (etcd data
-# directory is not empty), reported as done rather than as an error.
+# timing it. Talos answers by gRPC code, matched here:
+#   FailedPrecondition  "bootstrap is not available yet": the API is up but the etcd service has
+#                       not reached its waiting-to-join state; retried within WAIT_TIMEOUT
+#   AlreadyExists       "etcd data directory is not empty": bootstrapped before; reported as done
 bootstrap: $(TALOSCONFIG) ## Bootstrap etcd + control plane (waits for the Talos API; no-op if done)
 	$(call wait-for,Talos API on control-plane-1,$(TALOSCTL) version)
-	@out=$$($(TALOSCTL) bootstrap 2>&1) && { [ -z "$$out" ] || echo "$$out"; echo "bootstrap: started"; } \
-		|| { case $$out in *AlreadyExists*) echo "bootstrap: already done";; \
-		     *) echo "$$out" >&2; exit 1;; esac; }
+	@told=; until out=$$($(TALOSCTL) bootstrap 2>&1); do \
+		case $$out in \
+			*AlreadyExists*) echo "bootstrap: already done"; exit 0;; \
+			*FailedPrecondition*) \
+				[ $$SECONDS -lt $(WAIT_TIMEOUT) ] || { echo "$$out" >&2; exit 1; }; \
+				[ -n "$$told" ] || { echo "bootstrap: etcd not ready to bootstrap yet, retrying..."; told=1; }; \
+				sleep 5;; \
+			*) echo "$$out" >&2; exit 1;; \
+		esac; \
+	done; \
+	[ -z "$$out" ] || echo "$$out"; \
+	echo "bootstrap: started"
 
 # Fetch kubeconfig into a file, rewrite the API server endpoint to the host-accessible port
 # forward, then merge into the default kubeconfig. Safe for multi-cluster setups: only the
