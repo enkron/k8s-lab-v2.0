@@ -25,10 +25,10 @@ concurrency:
 env:
   # Tool versions not owned by the Makefile. Cluster component versions come from
   # `make -s print-<VAR>` below so the Makefile stays their single source of truth.
-  HELM_VERSION: 4.2.4
+  HELM_VERSION: 4.3.1
   KUBECONFORM_VERSION: 0.8.0
   ACTIONLINT_VERSION: 1.7.12
-  YQ_VERSION: 4.53.2
+  YQ_VERSION: 4.54.1
   YAMLLINT_VERSION: 1.37.1
   RUMDL_VERSION: 0.2.60
 
