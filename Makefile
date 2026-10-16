@@ -83,11 +83,11 @@ VDE_SWITCH     ?= $(eval VDE_SWITCH := $(find-vde_switch))$(VDE_SWITCH)
 # Cluster version triad - pinned together because they move as a tested set: Talos v1.14.0
 # defaults to K8s 1.37.0, but stable Cilium (1.20.x) is only e2e-tested up to K8s 1.36, so K8s is
 # held at 1.36.x. Keep all three within Cilium's supported window before bumping any one of them.
-TALOS_VERSION      := v1.14.0
-KUBERNETES_VERSION := 1.36.4
+TALOS_VERSION      := v1.14.3
+KUBERNETES_VERSION := 1.36.5
 # CILIUM_VERSION pins the Helm chart (resolved against the repo index at install time), unlike
 # TALOS_VERSION and KUBERNETES_VERSION which bake into the generated machine configs.
-CILIUM_VERSION := 1.20.1
+CILIUM_VERSION := 1.20.3
 # FRR_VERSION pins the Route Reflector pod image. manifests/frr-route-reflector.yaml must carry
 # the same tag and a matching 'frr version' header; tests/check-versions.sh enforces both.
 # FRR_ROUTER_VERSION is the FRR release the upstream router gets from its Debian release via apt
