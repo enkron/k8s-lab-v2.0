@@ -187,13 +187,16 @@ Patch files are stored in `talos/patches/`:
 
 - `common.yaml` - shared: `machine.certSANs` includes `127.0.0.1` and
   `localhost` (required for talosctl access through QEMU NAT port forwarding);
-  `KernelModuleConfig` (br_netfilter), `SysctlConfig` (forwarding, bridge-nf),
-  `TimeSyncConfig` (plain NTP, no NTS), one `RegistryTLSConfig` per registry;
+  `KernelModuleConfig` (br_netfilter), `SysctlConfig` (forwarding, bridge-nf);
   `KubeNodeConfig.nodeIP.validSubnets: [fd00:100::/64, 10.100.0.0/24]` (forces
   kubelet to register with internal VDE network addresses - IPv6 primary, IPv4
   secondary for Cilium native routing datapath); `KubeNetworkConfig` with the
   IPv6-first pod/service subnets and explicit per-node mask sizes; the
   generated `DiscoveryServiceConfig` is deleted (discovery off)
+- `proxy.yaml` - opt-in, only with `make PROXY_CA=<pem>`: a
+  `TrustedRootsConfig` with the CA of a TLS-intercepting proxy (image pulls
+  keep verifying TLS) and `TimeSyncConfig` with plain NTP (NTS cannot pass the
+  proxy)
 - `controlplane.yaml` - `KubeAPIServerConfig` (bind address, `certExtraSANs`
   for all access paths), `KubeControllerManagerConfig` / `KubeSchedulerConfig`
   bind addresses, `cluster.etcd.advertisedSubnets: [fd00:100::/64]` (etcd must

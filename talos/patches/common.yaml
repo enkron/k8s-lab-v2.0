@@ -17,6 +17,9 @@
 # documents are appended. Documents generated for both node types are patched here,
 # control-plane-only documents in controlplane.yaml. The v1alpha1 document keeps only
 # the fields that have no multi-document replacement.
+#
+# Time sync and registry TLS stay at the Talos defaults (NTS, verified TLS). Behind a
+# TLS-intercepting proxy, pass its CA with 'make PROXY_CA=<pem>' (talos/patches/proxy.yaml).
 machine:
   # Talos API TLS certificate must include 127.0.0.1 and localhost because
   # talosctl connects through QEMU SLIRP port forwarding (host:50000 -> VM:50000).
@@ -35,40 +38,6 @@ params:
   net.ipv6.conf.all.forwarding: "1"
   net.bridge.bridge-nf-call-iptables: "1"
   net.bridge.bridge-nf-call-ip6tables: "1"
----
-# Plain NTP, no NTS: Talos 1.14 defaults to NTS when no TimeSyncConfig is given, and the
-# NTS key exchange (TLS on port 4460) does not survive the TLS-intercepting proxy the lab
-# sometimes runs behind (see RegistryTLSConfig below).
-apiVersion: v1alpha1
-kind: TimeSyncConfig
-ntp:
-  servers:
-    - time.cloudflare.com
-  useNTS: false
----
-# When the lab runs behind a TLS-intercepting proxy, registry certificates are re-signed
-# with a corporate root CA the Talos nodes do not trust, so image pulls fail with
-# "x509: certificate signed by unknown authority". Skip cert verification for the
-# registries we pull from (one RegistryTLSConfig document per registry host).
-apiVersion: v1alpha1
-kind: RegistryTLSConfig
-name: registry.k8s.io
-insecureSkipVerify: true
----
-apiVersion: v1alpha1
-kind: RegistryTLSConfig
-name: ghcr.io
-insecureSkipVerify: true
----
-apiVersion: v1alpha1
-kind: RegistryTLSConfig
-name: quay.io
-insecureSkipVerify: true
----
-apiVersion: v1alpha1
-kind: RegistryTLSConfig
-name: docker.io
-insecureSkipVerify: true
 ---
 # Force kubelet to register with addresses from the internal VDE network. Without this,
 # kubelet picks the SLIRP management IP (192.168.100.x) which is per-VM isolated NAT,
@@ -102,9 +71,8 @@ serviceSubnets:
 nodeCIDRMaskSizeIPv4: 24
 nodeCIDRMaskSizeIPv6: 64
 ---
-# Cluster discovery is off. The external service registry (discovery.talos.dev:443) is
-# unreachable behind the TLS-intercepting proxy and not needed: membership is static and
-# KubeSpan is not used. Talos 1.14 disables the service by removing every
+# Cluster discovery is off. The external service registry (discovery.talos.dev:443) is not
+# needed: membership is static and KubeSpan is not used. Talos 1.14 disables the service by removing every
 # DiscoveryServiceConfig document; the Kubernetes registry is deprecated and already
 # disabled by default. The health and dashboard targets pass explicit node lists.
 apiVersion: v1alpha1

@@ -67,6 +67,12 @@ behind `TALOS_VERSION` after a bump, override the package or point
   own public key there before `make seed`, or `make ssh-upstream` is refused
   (password login is disabled). Nothing else needs SSH: the Talos nodes have
   no sshd and `make test-e2e` does not use it.
+- **TLS-intercepting proxy**: if the network re-signs HTTPS with a corporate
+  root CA, generate the configs with `make PROXY_CA=<pem bundle> talos-gen`
+  (e.g. `PROXY_CA=/etc/nix/macos-keychain.crt`). The Talos nodes then trust
+  that CA and use plain NTP; without it they keep the defaults (verified TLS,
+  NTS). Changing `PROXY_CA` regenerates the configs; a running cluster needs a
+  rebuild or `talosctl apply-config` to pick it up.
 - **Free host ports**: QEMU forwards `127.0.0.1` ports 50000 (Talos API,
   control-plane-1), 6443 (Kubernetes API) and 2200 (SSH to the router); a VM
   fails to start if its port is taken. The forwards listen on loopback only,

@@ -6,7 +6,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 cd "$REPO_ROOT"
-need yq
+need yq openssl
 TALOSCTL=${TALOSCTL:-$(mkvar TALOSCTL)}
 TALOS_VERSION=$(mkvar TALOS_VERSION)
 K8S_VERSION=$(mkvar KUBERNETES_VERSION)
@@ -17,22 +17,32 @@ TALOS_INSTALLER_IMAGE=$(mkvar TALOS_INSTALLER_IMAGE)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# render DIR [PROXY_CA]: the Makefile invocation, into DIR. The proxy patch comes from the
+# Makefile's own rule, so the CA handling is tested, not copied.
+render() {
+  local dir=$1 node base
+  mkdir -p "$dir"
+  make -s -C "$REPO_ROOT" TALOS_GEN_DIR="$dir" PROXY_CA="${2:-}" "$dir/proxy.yaml"
+  "$TALOSCTL" gen config "$CLUSTER_NAME" "$CLUSTER_ENDPOINT" \
+    --talos-version "$TALOS_VERSION" \
+    --kubernetes-version "$K8S_VERSION" \
+    --install-image "$TALOS_INSTALLER_IMAGE" \
+    -o "$dir" --with-docs=false --with-examples=false \
+    --config-patch @talos/patches/common.yaml \
+    --config-patch "@$dir/proxy.yaml" \
+    --config-patch-control-plane @talos/patches/controlplane.yaml \
+    --config-patch-worker @talos/patches/worker.yaml >/dev/null
+  for node in control-plane-1 worker-1 worker-2; do
+    base=worker
+    [ "$node" = control-plane-1 ] && base=controlplane
+    "$TALOSCTL" machineconfig patch "$dir/$base.yaml" --patch "@talos/patches/$node.yaml" \
+      -o "$dir/$node.yaml"
+  done
+}
+
 client=$("$TALOSCTL" version --client | sed -n 's/^[[:space:]]*Tag:[[:space:]]*//p' | head -1)
 log "rendering with talosctl $client (Talos $TALOS_VERSION, Kubernetes $K8S_VERSION)"
-"$TALOSCTL" gen config "$CLUSTER_NAME" "$CLUSTER_ENDPOINT" \
-  --talos-version "$TALOS_VERSION" \
-  --kubernetes-version "$K8S_VERSION" \
-  --install-image "$TALOS_INSTALLER_IMAGE" \
-  -o "$tmp" --with-docs=false --with-examples=false \
-  --config-patch @talos/patches/common.yaml \
-  --config-patch-control-plane @talos/patches/controlplane.yaml \
-  --config-patch-worker @talos/patches/worker.yaml >/dev/null
-for node in control-plane-1 worker-1 worker-2; do
-  base=worker
-  [ "$node" = control-plane-1 ] && base=controlplane
-  "$TALOSCTL" machineconfig patch "$tmp/$base.yaml" --patch "@talos/patches/$node.yaml" \
-    -o "$tmp/$node.yaml"
-done
+render "$tmp"
 
 for f in controlplane worker control-plane-1 worker-1 worker-2; do
   check "$f.yaml is valid (talosctl validate, cloud mode, strict)" \
@@ -105,15 +115,17 @@ node_checks() { # NODE MGMT_IP IP6 IP4
     fail "$n: expected 2 LinkAliasConfig documents, found $(count LinkAliasConfig "$cfg")"
   fi
   check "$n: resolver uses the SLIRP DNS" doc ResolverConfig '.nameservers[0].address == "192.168.100.3"' "$cfg"
-  check "$n: plain NTP without NTS" doc TimeSyncConfig '(.ntp.servers | join(",")) == "time.cloudflare.com" and .ntp.useNTS == false' "$cfg"
   check "$n: br_netfilter module" doc KernelModuleConfig '.name == "br_netfilter"' "$cfg"
   check "$n: forwarding and bridge-nf sysctls" \
     doc SysctlConfig '.params["net.ipv4.ip_forward"] == "1" and .params["net.ipv6.conf.all.forwarding"] == "1" and .params["net.bridge.bridge-nf-call-iptables"] == "1" and .params["net.bridge.bridge-nf-call-ip6tables"] == "1"' "$cfg"
-  if [ "$(count RegistryTLSConfig "$cfg")" = 4 ]; then
-    pass "$n: four RegistryTLSConfig documents (proxy-intercepted registries)"
-  else
-    fail "$n: expected 4 RegistryTLSConfig documents, found $(count RegistryTLSConfig "$cfg")"
-  fi
+  local kind
+  for kind in RegistryTLSConfig TimeSyncConfig TrustedRootsConfig; do
+    if [ "$(count "$kind" "$cfg")" = 0 ]; then
+      pass "$n: no $kind (Talos defaults; verified TLS and NTS without PROXY_CA)"
+    else
+      fail "$n: unexpected $kind document"
+    fi
+  done
 }
 
 node_checks control-plane-1 192.168.100.10 fd00:100::10 10.100.0.10
@@ -135,6 +147,30 @@ for w in worker-1 worker-2; do
     pass "$w: no control-plane-only documents leaked into the worker config"
   else
     fail "$w: KubeProxyConfig present on a worker"
+  fi
+done
+
+# Opt-in proxy patch: render again with a throwaway self-signed CA as PROXY_CA (CRLF line
+# endings, like a bundle exported from the macOS keychain).
+log "rendering with PROXY_CA"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+  -subj /CN=k8s-lab-test-proxy -keyout "$tmp/ca.key" -out "$tmp/ca.pem" 2>/dev/null
+sed 's/$/\r/' "$tmp/ca.pem" > "$tmp/ca-crlf.pem"
+render "$tmp/proxy" "$tmp/ca-crlf.pem"
+ca_pem=$(cat "$tmp/ca.pem")
+export ca_pem
+for f in control-plane-1 worker-1 worker-2; do
+  cfg=$tmp/proxy/$f.yaml
+  check "$f (PROXY_CA): valid (talosctl validate, cloud mode, strict)" \
+    "$TALOSCTL" validate -c "$cfg" -m cloud --strict
+  check "$f (PROXY_CA): TrustedRootsConfig carries the CA without CRs" \
+    named TrustedRootsConfig proxy-ca '(.certificates | trim) == (strenv(ca_pem) | trim)' "$cfg"
+  check "$f (PROXY_CA): plain NTP without NTS" \
+    doc TimeSyncConfig '(.ntp.servers | join(",")) == "time.cloudflare.com" and .ntp.useNTS == false' "$cfg"
+  if [ "$(count RegistryTLSConfig "$cfg")" = 0 ]; then
+    pass "$f (PROXY_CA): registry TLS verification stays on"
+  else
+    fail "$f (PROXY_CA): RegistryTLSConfig present"
   fi
 done
 

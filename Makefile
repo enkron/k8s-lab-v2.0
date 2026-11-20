@@ -45,6 +45,7 @@ ZSTD     ?= zstd
 SOCAT    ?= socat
 CURL     ?= curl
 JQ       ?= jq
+YQ       ?= yq
 # shasum ships with macOS (perl) and Ubuntu; sha512sum is not on macOS without coreutils.
 SHASUM   ?= shasum
 # talosctl binary. The machine config patches use Talos 1.14 multi-document kinds, so the client
@@ -184,6 +185,10 @@ CLUSTER_ENDPOINT    := https://[$(IP_INTERNAL_control-plane-1)]:$(K8S_API_PORT)
 CP_INTERNAL_IPS     := $(foreach n,$(TALOS_CP_NODES),$(IP_INTERNAL_$(n)))
 WORKER_INTERNAL_IPS := $(foreach n,$(TALOS_WORKER_NODES),$(IP_INTERNAL_$(n)))
 DISK_SIZE := 20G
+# PEM bundle with the root CA of a TLS-intercepting proxy, e.g. PROXY_CA=/etc/nix/macos-keychain.crt.
+# Set: the Talos nodes trust it and use plain NTP (talos/patches/proxy.yaml). Empty: Talos
+# defaults. Changing it regenerates the configs on the next talos-gen.
+PROXY_CA ?=
 # Per-VM UEFI variable store (pflash1); the code image (pflash0) is shared read-only.
 VARS_SIZE := 64M
 
@@ -214,6 +219,7 @@ VARS  := $(NODES:%=$(DISK_DIR)/%-vars.fd)
 
 TALOS_SECRETS      := $(TALOS_GEN_DIR)/secrets.yaml
 TALOS_BASE_CONFIGS := $(TALOS_GEN_DIR)/controlplane.yaml $(TALOS_GEN_DIR)/worker.yaml
+TALOS_PROXY_PATCH  := $(TALOS_GEN_DIR)/proxy.yaml
 TALOSCONFIG        := $(TALOS_GEN_DIR)/talosconfig
 # Exported so every talosctl invocation in a recipe picks it up.
 export TALOSCONFIG
@@ -372,7 +378,7 @@ $(TALOS_GEN_DIR)/controlplane.yaml -o $@" >&2; \
 # multi-document layout of the generated config to the pinned Talos release even when a newer
 # talosctl is installed; --install-image pins the installer to TALOS_INSTALLER_IMAGE (the default
 # follows the talosctl client's version). tests/validate-talos.sh mirrors this invocation.
-$(TALOS_BASE_CONFIGS) $(TALOSCONFIG) &: $(TALOS_SECRETS) \
+$(TALOS_BASE_CONFIGS) $(TALOSCONFIG) &: $(TALOS_SECRETS) $(TALOS_PROXY_PATCH) \
     $(addprefix $(TALOS_PATCH_DIR)/,common.yaml controlplane.yaml worker.yaml) | $(TALOS_GEN_DIR)/
 	$(TALOSCTL) gen config $(CLUSTER_NAME) $(CLUSTER_ENDPOINT) \
 		--with-secrets $(TALOS_SECRETS) \
@@ -381,6 +387,7 @@ $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) &: $(TALOS_SECRETS) \
 		--install-image $(TALOS_INSTALLER_IMAGE) \
 		-o $(TALOS_GEN_DIR) --force \
 		--config-patch @$(TALOS_PATCH_DIR)/common.yaml \
+		--config-patch @$(TALOS_PROXY_PATCH) \
 		--config-patch-control-plane @$(TALOS_PATCH_DIR)/controlplane.yaml \
 		--config-patch-worker @$(TALOS_PATCH_DIR)/worker.yaml
 	@# talosconfig endpoint for QEMU NAT: the host reaches the Talos API through the forwarded
@@ -388,6 +395,19 @@ $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) &: $(TALOS_SECRETS) \
 	@# through it. 127.0.0.1 rather than localhost avoids IPv6 resolution surprises.
 	$(TALOSCTL) config endpoint 127.0.0.1:$(TALOS_API_PORT)
 	$(TALOSCTL) config node $(IP_MGMT_control-plane-1)
+
+# Proxy CA patch: talos/patches/proxy.yaml with the PROXY_CA bundle (CRs stripped) as its
+# certificates, or an empty patch without PROXY_CA. Rendered on every run, but the file is only
+# replaced when its content changes, so the configs are regenerated exactly when PROXY_CA or
+# the CA file changed (make re-reads the timestamp after the recipe).
+.PHONY: FORCE
+$(TALOS_PROXY_PATCH): $(TALOS_PATCH_DIR)/proxy.yaml FORCE | $(TALOS_GEN_DIR)/
+	@if [ -n '$(PROXY_CA)' ]; then \
+		[ -r '$(PROXY_CA)' ] || { echo "PROXY_CA: cannot read '$(PROXY_CA)'" >&2; exit 1; }; \
+		PROXY_CA_PEM=$$(tr -d '\r' < '$(PROXY_CA)') $(YQ) \
+			'(select(.kind == "TrustedRootsConfig") | .certificates) = strenv(PROXY_CA_PEM)' $<; \
+	else echo 'machine: {}'; fi > $@.tmp
+	@if cmp -s $@.tmp $@; then rm $@.tmp; else mv $@.tmp $@; fi
 
 talos-configs: $(TALOS_NODE_CONFIGS) ## Patch per-node identity (MACs, IPs, hostname) into node configs
 
@@ -664,8 +684,9 @@ talos-health: $(TALOSCONFIG) ## Check cluster health (etcd, kubelet, node readin
 # seed ISOs left over from the pre-Talos layout.
 clean: down ## Remove disks, generated configs, seed ISOs and kubeconfig (keeps images, secrets)
 	rm -rf $(DISK_DIR)
-	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_NODE_CONFIGS) $(TALOS_META_DATA) \
-		$(TALOS_SEEDS) $(KUBECONFIG_FILE) $(HUBBLE_CA_FILE) $(CLOUD_INIT_DIR)/*/seed.iso
+	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_PROXY_PATCH) $(TALOS_NODE_CONFIGS) \
+		$(TALOS_META_DATA) $(TALOS_SEEDS) $(KUBECONFIG_FILE) $(HUBBLE_CA_FILE) \
+		$(CLOUD_INIT_DIR)/*/seed.iso
 
 nuke: clean ## Remove everything including base images and the Talos secrets bundle (new PKI)
 	rm -rf $(IMAGE_DIR) $(TALOS_GEN_DIR)

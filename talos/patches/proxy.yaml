@@ -1,0 +1,22 @@
+# Opt-in patch for running behind a TLS-intercepting proxy: 'make PROXY_CA=<pem> talos-gen'.
+# The Makefile fills `certificates` from the PROXY_CA bundle and passes the result to
+# 'talosctl gen config' as talos/generated/proxy.yaml; without PROXY_CA it passes an empty patch
+# and nothing below applies.
+#
+# The proxy re-signs registry (and other HTTPS) certificates with a corporate root CA. Adding
+# that CA to the node trust store keeps verification on for image pulls and every other TLS
+# client on the node, instead of skipping it per registry.
+apiVersion: v1alpha1
+kind: TrustedRootsConfig
+name: proxy-ca
+certificates: ""
+---
+# Plain NTP, no NTS: Talos 1.14 defaults to NTS, whose key exchange (TLS on port 4460) cannot
+# work through an intercepting proxy even with its CA trusted, because the NTP keys are derived
+# from the TLS session with the real server.
+apiVersion: v1alpha1
+kind: TimeSyncConfig
+ntp:
+  servers:
+    - time.cloudflare.com
+  useNTS: false
