@@ -203,12 +203,18 @@ Patch files are stored in `talos/patches/`:
   bind addresses, `cluster.etcd.advertisedSubnets: [fd00:100::/64]` (etcd must
   advertise on the internal network - default SLIRP addresses are per-VM
   isolated NAT); the generated `KubeFlannelCNIConfig` is deleted (CNI none)
-  and `KubeProxyConfig.enabled: false` (Cilium replaces kube-proxy)
+  and `KubeProxyConfig.enabled: false` (Cilium replaces kube-proxy);
+  route-reflector node label
 - `worker.yaml` - `KubeNodeConfig.labels` (`bgp-policy: worker`)
-- `control-plane-1.yaml` - `LinkAliasConfig` per NIC (matched by MAC),
-  `LinkConfig` with static addresses and the default route, `ResolverConfig`,
-  `HostnameConfig`, route-reflector node label
-- `worker-1.yaml`, `worker-2.yaml` - same pattern per node
+
+Per-node identity is generated, not stored: `make talos-configs` renders
+`talos/generated/<node>.patch.yaml` from the node inventory in the Makefile
+(`talos-node-patch`: `LinkAliasConfig` per NIC matched by MAC, `LinkConfig`
+with static addresses and the default route, `ResolverConfig`,
+`HostnameConfig`) and applies it to the node's base config. The inventory is
+the single source of addressing; `tests/check-addresses.sh` checks the copies
+in the router's cloud-init, both `frr.conf` files and `cilium-bgp.yaml`
+against it.
 
 Cluster secrets live apart from the configs: `talos/generated/secrets.yaml`
 is created once by `talosctl gen secrets` and reused (`gen config
@@ -809,9 +815,7 @@ k8s_lab/
 |   |   +-- common.yaml
 |   |   +-- controlplane.yaml
 |   |   +-- worker.yaml
-|   |   +-- control-plane-1.yaml
-|   |   +-- worker-1.yaml
-|   |   +-- worker-2.yaml
+|   |   +-- proxy.yaml              # opt-in (PROXY_CA)
 |   +-- generated/                  # gitignored
 +-- manifests/
 |   +-- cilium-values.yaml
@@ -822,6 +826,7 @@ k8s_lab/
 |   +-- lint.sh
 |   +-- validate-*.sh
 |   +-- check-versions.sh
+|   +-- check-addresses.sh
 |   +-- e2e.sh
 |   +-- manifests/
 |       +-- e2e-workload.yaml

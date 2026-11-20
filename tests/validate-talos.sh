@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Render the Talos machine configs exactly like the Makefile does, validate them with
-# talosctl, and assert the multi-document structure the lab depends on.
+# Render the Talos machine configs through the Makefile's own rules into a scratch directory,
+# validate them with talosctl, and assert the multi-document structure the lab depends on.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
@@ -8,43 +8,32 @@ set -euo pipefail
 cd "$REPO_ROOT"
 need yq openssl
 TALOSCTL=${TALOSCTL:-$(mkvar TALOSCTL)}
+export TALOSCTL
 TALOS_VERSION=$(mkvar TALOS_VERSION)
 K8S_VERSION=$(mkvar KUBERNETES_VERSION)
-CLUSTER_NAME=$(mkvar CLUSTER_NAME)
-CLUSTER_ENDPOINT=$(mkvar CLUSTER_ENDPOINT)
 TALOS_INSTALLER_IMAGE=$(mkvar TALOS_INSTALLER_IMAGE)
+NODES=$(mkvar TALOS_NODES)
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# render DIR [PROXY_CA]: the Makefile invocation, into DIR. The proxy patch comes from the
-# Makefile's own rule, so the CA handling is tested, not copied.
+# render DIR [PROXY_CA]: the base and per-node configs, built by the Makefile's own rules with
+# TALOS_GEN_DIR pointed at DIR (a fresh secrets bundle included), so the test exercises the
+# exact talosctl invocations, the proxy patch and the per-node patch template.
 render() {
-  local dir=$1 node base
+  local dir=$1 node targets="$1/controlplane.yaml $1/worker.yaml"
+  for node in $NODES; do targets="$targets $dir/$node.yaml"; done
   mkdir -p "$dir"
-  make -s -C "$REPO_ROOT" TALOS_GEN_DIR="$dir" PROXY_CA="${2:-}" "$dir/proxy.yaml"
-  "$TALOSCTL" gen config "$CLUSTER_NAME" "$CLUSTER_ENDPOINT" \
-    --talos-version "$TALOS_VERSION" \
-    --kubernetes-version "$K8S_VERSION" \
-    --install-image "$TALOS_INSTALLER_IMAGE" \
-    -o "$dir" --with-docs=false --with-examples=false \
-    --config-patch @talos/patches/common.yaml \
-    --config-patch "@$dir/proxy.yaml" \
-    --config-patch-control-plane @talos/patches/controlplane.yaml \
-    --config-patch-worker @talos/patches/worker.yaml >/dev/null
-  for node in control-plane-1 worker-1 worker-2; do
-    base=worker
-    [ "$node" = control-plane-1 ] && base=controlplane
-    "$TALOSCTL" machineconfig patch "$dir/$base.yaml" --patch "@talos/patches/$node.yaml" \
-      -o "$dir/$node.yaml"
-  done
+  # shellcheck disable=SC2086 # word-split the target list
+  make -s -C "$REPO_ROOT" TALOS_GEN_DIR="$dir" PROXY_CA="${2:-}" $targets >/dev/null 2>"$dir/make.log" \
+    || { cat "$dir/make.log" >&2; return 1; }
 }
 
 client=$("$TALOSCTL" version --client | sed -n 's/^[[:space:]]*Tag:[[:space:]]*//p' | head -1)
 log "rendering with talosctl $client (Talos $TALOS_VERSION, Kubernetes $K8S_VERSION)"
 render "$tmp"
 
-for f in controlplane worker control-plane-1 worker-1 worker-2; do
+for f in controlplane worker $NODES; do
   check "$f.yaml is valid (talosctl validate, cloud mode, strict)" \
     "$TALOSCTL" validate -c "$tmp/$f.yaml" -m cloud --strict
 done
@@ -68,8 +57,14 @@ main() { yq -e "select(.kind == null) | $1" "$2" >/dev/null 2>&1; }
 # count KIND FILE: number of documents of KIND.
 count() { yq -N "select(.kind == \"$1\") | .kind" "$2" | grep -c . || true; }
 
-node_checks() { # NODE MGMT_IP IP6 IP4
+node_checks() { # NODE: the node's addressing comes from the Makefile inventory
   local n=$1 cfg=$tmp/$1.yaml key migrated=0
+  local mgmt ip6 ip4 mac_mgmt mac_int
+  mgmt=$(mkvar "IP_MGMT_$n")
+  ip6=$(mkvar "IP_INTERNAL_$n")
+  ip4=$(mkvar "IP4_INTERNAL_$n")
+  mac_mgmt=$(mkvar "MAC_MGMT_$n")
+  mac_int=$(mkvar "MAC_INTERNAL_$n")
   for key in .cluster.network .cluster.proxy .cluster.apiServer .cluster.controllerManager \
     .cluster.scheduler .cluster.discovery .machine.kubelet .machine.nodeLabels \
     .machine.network .machine.sysctls .machine.kernel .machine.time .machine.registries; do
@@ -104,17 +99,19 @@ node_checks() { # NODE MGMT_IP IP6 IP4
   check "$n: static hostname, generated auto hostname removed" \
     doc HostnameConfig ".hostname == \"$n\" and (has(\"auto\") | not)" "$cfg"
   check "$n: mgmt0 address and default route" \
-    named LinkConfig mgmt0 "([.addresses[].address] | join(\",\")) == \"$2/24\" and .routes[0].gateway == \"192.168.100.2\" and (.routes[0] | has(\"destination\") | not)" "$cfg"
+    named LinkConfig mgmt0 "([.addresses[].address] | join(\",\")) == \"$mgmt/24\" and .routes[0].gateway == \"$MGMT_GW\" and (.routes[0] | has(\"destination\") | not)" "$cfg"
   check "$n: int0 dual-stack addresses, IPv6 first" \
-    named LinkConfig int0 "([.addresses[].address] | join(\",\")) == \"$3/64,$4/24\"" "$cfg"
-  check "$n: NIC aliases are bound by MAC" \
-    doc LinkAliasConfig '.selector.match | test("^glob\\(\"52:54:00:00:0[12]:0[123]\", mac\\(link.permanent_addr\\)\\)$")' "$cfg"
+    named LinkConfig int0 "([.addresses[].address] | join(\",\")) == \"$ip6/64,$ip4/24\"" "$cfg"
+  check "$n: mgmt0 alias bound by MAC $mac_mgmt" \
+    named LinkAliasConfig mgmt0 ".selector.match == \"glob(\\\"$mac_mgmt\\\", mac(link.permanent_addr))\"" "$cfg"
+  check "$n: int0 alias bound by MAC $mac_int" \
+    named LinkAliasConfig int0 ".selector.match == \"glob(\\\"$mac_int\\\", mac(link.permanent_addr))\"" "$cfg"
   if [ "$(count LinkAliasConfig "$cfg")" = 2 ]; then
     pass "$n: two NIC aliases (mgmt0, int0)"
   else
     fail "$n: expected 2 LinkAliasConfig documents, found $(count LinkAliasConfig "$cfg")"
   fi
-  check "$n: resolver uses the SLIRP DNS" doc ResolverConfig '.nameservers[0].address == "192.168.100.3"' "$cfg"
+  check "$n: resolver uses the SLIRP DNS" doc ResolverConfig ".nameservers[0].address == \"$MGMT_DNS\"" "$cfg"
   check "$n: IPv6 forwarding on all interfaces (the rest are Talos defaults)" \
     doc SysctlConfig '(.params | to_json(0)) == "{\"net.ipv6.conf.all.forwarding\":\"1\"}"' "$cfg"
   local kind
@@ -127,9 +124,9 @@ node_checks() { # NODE MGMT_IP IP6 IP4
   done
 }
 
-node_checks control-plane-1 192.168.100.10 fd00:100::10 10.100.0.10
-node_checks worker-1 192.168.100.11 fd00:100::11 10.100.0.11
-node_checks worker-2 192.168.100.12 fd00:100::12 10.100.0.12
+MGMT_GW=$(mkvar MGMT_GW)
+MGMT_DNS=$(mkvar MGMT_DNS)
+for node in $NODES; do node_checks "$node"; done
 
 cp=$tmp/control-plane-1.yaml
 check "control-plane-1: kube-proxy disabled (Cilium kube-proxy replacement)" doc KubeProxyConfig '.enabled == false' "$cp"
@@ -158,7 +155,7 @@ sed 's/$/\r/' "$tmp/ca.pem" > "$tmp/ca-crlf.pem"
 render "$tmp/proxy" "$tmp/ca-crlf.pem"
 ca_pem=$(cat "$tmp/ca.pem")
 export ca_pem
-for f in control-plane-1 worker-1 worker-2; do
+for f in $NODES; do
   cfg=$tmp/proxy/$f.yaml
   check "$f (PROXY_CA): valid (talosctl validate, cloud mode, strict)" \
     "$TALOSCTL" validate -c "$cfg" -m cloud --strict

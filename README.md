@@ -91,7 +91,7 @@ make check-tools    # talosctl >= TALOS_VERSION, kubectl skew, cilium-cli presen
 make images         # download Debian + Talos base images
 make vms            # create per-node CoW disks
 make talos-gen      # generate Talos machine configs
-make talos-configs  # patch per-node identity (MACs, IPs)
+make talos-configs  # per-node identity (MACs, IPs) from the inventory
 make seed           # build CIDATA ISOs
 make up             # start all VMs
 make bootstrap      # initialize etcd + control plane (waits for the Talos API)
@@ -183,7 +183,7 @@ posts the `deps-outdated` table to the job summary every Monday.
 | Target | What it checks | Needs |
 |---|---|---|
 | `make lint` | yamllint, rumdl, shellcheck, actionlint | nothing (offline) |
-| `make validate` | Talos configs rendered with the pinned `talosctl`, `talosctl validate`, structural assertions; Cilium chart rendered and schema-checked with kubeconform (incl. BGP CRDs); FRR `vtysh -C` dry-run of both FRR configs; cloud-init schema; version consistency | network, container runtime |
+| `make validate` | Talos configs rendered with the pinned `talosctl`, `talosctl validate`, structural assertions; Cilium chart rendered and schema-checked with kubeconform (incl. BGP CRDs); FRR `vtysh -C` dry-run of both FRR configs; cloud-init schema; version and addressing consistency | network, container runtime |
 | `make test` | `lint` + `validate`; runs in GitHub Actions on every push | as above |
 | `make test-e2e` | live lab: Talos health and versions, Cilium, iBGP + eBGP sessions, route propagation, dual-stack pod/Service/DNS connectivity, north-south reachability | running lab |
 
@@ -222,7 +222,7 @@ k8s_lab/
 ├── cloud-init/
 │   └── upstream-router/      # Debian cloud-init (router: network + FRR)
 ├── talos/
-│   ├── patches/              # Machine config patches (common + per-node)
+│   ├── patches/              # Machine config patches (common, role, proxy)
 │   └── generated/            # gitignored: talosctl output, seed ISOs
 ├── manifests/
 │   ├── cilium-values.yaml    # Helm values (native routing, BGP, Talos)

@@ -22,12 +22,13 @@ K8S_VERSION=$(mkvar KUBERNETES_VERSION)
 CILIUM_VERSION=$(mkvar CILIUM_VERSION)
 TIMEOUT=${E2E_TIMEOUT:-300}
 NS=e2e-test
-CP_IP6=fd00:100::10
-W1_IP6=fd00:100::11
-W2_IP6=fd00:100::12
-UPSTREAM_IP6=fd00:100::1
-WORKERS="worker-1 worker-2"
-peer_ip() { case $1 in worker-1) echo "$W1_IP6" ;; worker-2) echo "$W2_IP6" ;; esac; }
+CP_IP6=$(mkvar IP_INTERNAL_control-plane-1)
+UPSTREAM_IP6=$(mkvar IP_INTERNAL_upstream-router)
+WORKERS=$(mkvar TALOS_WORKER_NODES)
+WORKER_IP6S=$(mkvar WORKER_INTERNAL_IPS)
+workers_csv=$(printf '%s' "$WORKER_IP6S" | tr ' ' ',')
+NODE_COUNT=$(mkvar TALOS_NODES | wc -w | tr -d ' ')
+peer_ip() { mkvar "IP_INTERNAL_$1"; }
 
 frr() { kubectl -n kube-system exec ds/frr-route-reflector -- vtysh -c "$1"; }
 peer_established() { # AFI(ipv4Unicast|ipv6Unicast) PEER
@@ -38,14 +39,14 @@ nodes_json() { kubectl get nodes -o json; }
 
 log "1. Talos: health and versions"
 check "talosctl health (control plane + workers)" \
-  "$TALOSCTL" health --control-plane-nodes "$CP_IP6" --worker-nodes "$W1_IP6,$W2_IP6" --wait-timeout "${TIMEOUT}s"
-server_tags() { "$TALOSCTL" version -n "$CP_IP6,$W1_IP6,$W2_IP6" | awk '/^Server:/ {s=1} s && /Tag:/ {print $2}'; }
-check "all 3 nodes run Talos $TALOS_VERSION" \
-  test "$(server_tags | sort | uniq -c | awk '{print $1, $2}')" = "3 $TALOS_VERSION"
+  "$TALOSCTL" health --control-plane-nodes "$CP_IP6" --worker-nodes "$workers_csv" --wait-timeout "${TIMEOUT}s"
+server_tags() { "$TALOSCTL" version -n "$CP_IP6,$workers_csv" | awk '/^Server:/ {s=1} s && /Tag:/ {print $2}'; }
+check "all $NODE_COUNT nodes run Talos $TALOS_VERSION" \
+  test "$(server_tags | sort | uniq -c | awk '{print $1, $2}')" = "$NODE_COUNT $TALOS_VERSION"
 
 log "2. Kubernetes nodes"
 check "all nodes Ready" kubectl wait --for=condition=Ready node --all --timeout="${TIMEOUT}s"
-check "exactly 3 nodes" test "$(nodes_json | jq '.items | length')" = 3
+check "exactly $NODE_COUNT nodes" test "$(nodes_json | jq '.items | length')" = "$NODE_COUNT"
 kubelets_ok() { nodes_json | jq -e --arg v "v$K8S_VERSION" '[.items[].status.nodeInfo.kubeletVersion] | all(. == $v)'; }
 check "kubelet v$K8S_VERSION on every node" kubelets_ok
 primary_ipv6() {

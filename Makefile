@@ -126,10 +126,15 @@ NODES              := $(TALOS_NODES) $(DEBIAN_NODES)
 #   mgmt (QEMU user-mode NAT): host SSH/API/talosctl access via port forwarding. SLIRP networks
 #     are isolated per VM, so VMs cannot reach each other over them.
 #   internal (VDE switch): shared L2 segment for inter-VM traffic (BGP, pods).
-# Stable MAC addresses let Talos/cloud-init bind NICs deterministically. The same MACs and IPs
-# appear in talos/patches/<node>.yaml and cloud-init/upstream-router/network-config; keep them in
-# sync.
+# Stable MAC addresses let Talos/cloud-init bind NICs deterministically. This inventory is the
+# source of truth for addressing: the Talos per-node patches are generated from it
+# (talos-node-patch below), tests/e2e.sh reads it, and tests/check-addresses.sh checks the
+# copies in cloud-init/upstream-router/network-config, both frr.conf files and
+# manifests/cilium-bgp.yaml against it.
 MGMT_NET       := 192.168.100.0/24
+# QEMU user-mode networking puts its gateway on .2 and its DNS forwarder on .3 of MGMT_NET.
+MGMT_GW        := 192.168.100.2
+MGMT_DNS       := 192.168.100.3
 TALOS_API_PORT := 50000
 K8S_API_PORT   := 6443
 SSH_PORT       := 2200
@@ -147,6 +152,8 @@ MEM_upstream-router          := 512M
 MAC_MGMT_upstream-router     := 52:54:00:00:01:00
 MAC_INTERNAL_upstream-router := 52:54:00:00:02:00
 IP_MGMT_upstream-router      := 192.168.100.13
+IP_INTERNAL_upstream-router  := fd00:100::1
+IP4_INTERNAL_upstream-router := 10.100.0.1
 HOSTFWD_upstream-router      := hostfwd=tcp:$(HOSTFWD_ADDR):$(SSH_PORT)-$(IP_MGMT_upstream-router):22
 
 SMP_control-plane-1          := 2
@@ -155,6 +162,7 @@ MAC_MGMT_control-plane-1     := 52:54:00:00:01:01
 MAC_INTERNAL_control-plane-1 := 52:54:00:00:02:01
 IP_MGMT_control-plane-1      := 192.168.100.10
 IP_INTERNAL_control-plane-1  := fd00:100::10
+IP4_INTERNAL_control-plane-1 := 10.100.0.10
 HOSTFWD_control-plane-1      := hostfwd=tcp:$(HOSTFWD_ADDR):$(TALOS_API_PORT)-$(IP_MGMT_control-plane-1):50000 \
                                 hostfwd=tcp:$(HOSTFWD_ADDR):$(K8S_API_PORT)-$(IP_MGMT_control-plane-1):6443
 
@@ -164,6 +172,7 @@ MAC_MGMT_worker-1     := 52:54:00:00:01:02
 MAC_INTERNAL_worker-1 := 52:54:00:00:02:02
 IP_MGMT_worker-1      := 192.168.100.11
 IP_INTERNAL_worker-1  := fd00:100::11
+IP4_INTERNAL_worker-1 := 10.100.0.11
 # No forwards on the workers: talosctl reaches them through control-plane-1 (internal IPs). To
 # debug a worker that never joined, use its serial console (make console-<node>).
 HOSTFWD_worker-1      :=
@@ -174,6 +183,7 @@ MAC_MGMT_worker-2     := 52:54:00:00:01:03
 MAC_INTERNAL_worker-2 := 52:54:00:00:02:03
 IP_MGMT_worker-2      := 192.168.100.12
 IP_INTERNAL_worker-2  := fd00:100::12
+IP4_INTERNAL_worker-2 := 10.100.0.12
 HOSTFWD_worker-2      :=
 
 # --- Cluster ---
@@ -223,6 +233,7 @@ TALOS_PROXY_PATCH  := $(TALOS_GEN_DIR)/proxy.yaml
 TALOSCONFIG        := $(TALOS_GEN_DIR)/talosconfig
 # Exported so every talosctl invocation in a recipe picks it up.
 export TALOSCONFIG
+TALOS_NODE_PATCHES := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.patch.yaml)
 TALOS_NODE_CONFIGS := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.yaml)
 TALOS_META_DATA    := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.meta-data)
 TALOS_SEEDS        := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%-seed.iso)
@@ -377,7 +388,7 @@ $(TALOS_GEN_DIR)/controlplane.yaml -o $@" >&2; \
 # required because talosctl refuses to overwrite existing files. --talos-version pins the
 # multi-document layout of the generated config to the pinned Talos release even when a newer
 # talosctl is installed; --install-image pins the installer to TALOS_INSTALLER_IMAGE (the default
-# follows the talosctl client's version). tests/validate-talos.sh mirrors this invocation.
+# follows the talosctl client's version). tests/validate-talos.sh runs these rules.
 $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) &: $(TALOS_SECRETS) $(TALOS_PROXY_PATCH) \
     $(addprefix $(TALOS_PATCH_DIR)/,common.yaml controlplane.yaml worker.yaml) | $(TALOS_GEN_DIR)/
 	$(TALOSCTL) gen config $(CLUSTER_NAME) $(CLUSTER_ENDPOINT) \
@@ -411,13 +422,63 @@ $(TALOS_PROXY_PATCH): $(TALOS_PATCH_DIR)/proxy.yaml FORCE | $(TALOS_GEN_DIR)/
 
 talos-configs: $(TALOS_NODE_CONFIGS) ## Patch per-node identity (MACs, IPs, hostname) into node configs
 
-# Control-plane nodes derive from controlplane.yaml, workers from worker.yaml. $(filter) picks the
-# base and the patch out of $^ so the order of the prerequisite lines does not matter.
+# $(call talos-node-patch,<node>): the node's identity as Talos documents, from the inventory.
+# NIC aliases bound by MAC (like cloud-init's match.macaddress), static addresses, the SLIRP
+# gateway and DNS, and a static hostname. Configuring any link explicitly disables Talos'
+# default DHCP on all links. The static hostname has priority over the nocloud meta-data
+# local-hostname; the generated `auto: stable` is removed because it excludes `hostname`.
+define talos-node-patch
+apiVersion: v1alpha1
+kind: LinkAliasConfig
+name: mgmt0
+selector:
+  match: glob("$(MAC_MGMT_$(1))", mac(link.permanent_addr))
+---
+apiVersion: v1alpha1
+kind: LinkAliasConfig
+name: int0
+selector:
+  match: glob("$(MAC_INTERNAL_$(1))", mac(link.permanent_addr))
+---
+apiVersion: v1alpha1
+kind: LinkConfig
+name: mgmt0
+addresses:
+  - address: $(IP_MGMT_$(1))/$(lastword $(subst /, ,$(MGMT_NET)))
+routes:
+  - gateway: $(MGMT_GW)
+---
+apiVersion: v1alpha1
+kind: LinkConfig
+name: int0
+addresses:
+  - address: $(IP_INTERNAL_$(1))/64
+  - address: $(IP4_INTERNAL_$(1))/24
+---
+apiVersion: v1alpha1
+kind: ResolverConfig
+nameservers:
+  - address: $(MGMT_DNS)
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: $(1)
+auto:
+  $$patch: delete
+endef
+
+# Rendered on every run, replaced only when the content changes (like the proxy patch), so the
+# node config is rebuilt exactly when the node's inventory changes.
+$(TALOS_NODE_PATCHES): $(TALOS_GEN_DIR)/%.patch.yaml: FORCE | $(TALOS_GEN_DIR)/
+	$(file >$@.tmp,$(call talos-node-patch,$*))
+	@if cmp -s $@.tmp $@; then rm $@.tmp; else mv $@.tmp $@; fi
+
+# Control-plane nodes derive from controlplane.yaml, workers from worker.yaml.
 $(TALOS_CP_NODES:%=$(TALOS_GEN_DIR)/%.yaml):     $(TALOS_GEN_DIR)/controlplane.yaml
 $(TALOS_WORKER_NODES:%=$(TALOS_GEN_DIR)/%.yaml): $(TALOS_GEN_DIR)/worker.yaml
-$(TALOS_NODE_CONFIGS): $(TALOS_GEN_DIR)/%.yaml: $(TALOS_PATCH_DIR)/%.yaml
-	$(TALOSCTL) machineconfig patch $(filter $(TALOS_GEN_DIR)/%,$^) \
-		--patch @$(filter $(TALOS_PATCH_DIR)/%,$^) --output $@
+$(TALOS_NODE_CONFIGS): $(TALOS_GEN_DIR)/%.yaml: $(TALOS_GEN_DIR)/%.patch.yaml
+	$(TALOSCTL) machineconfig patch $(filter-out %.patch.yaml,$^) \
+		--patch @$(filter %.patch.yaml,$^) --output $@
 
 ##@ Seed ISOs
 
@@ -634,12 +695,13 @@ cilium-bgp: ## Apply Cilium iBGP peering CRDs for workers (waits for the CRDs)
 lint: ## Lint YAML, Markdown, shell scripts, workflows (offline)
 	$(TEST_DIR)/lint.sh
 
-validate: ## Validate Talos configs, manifests, FRR and cloud-init (needs network)
+validate: ## Validate Talos configs, manifests, FRR, cloud-init, versions, addressing (needs network)
 	$(TEST_DIR)/validate-talos.sh
 	$(TEST_DIR)/validate-manifests.sh
 	$(TEST_DIR)/validate-frr.sh
 	$(TEST_DIR)/validate-cloud-init.sh
 	$(TEST_DIR)/check-versions.sh
+	$(TEST_DIR)/check-addresses.sh
 
 test: lint validate ## lint + validate (what CI runs on every push)
 
@@ -710,7 +772,8 @@ talos-health: $(TALOSCONFIG) ## Check cluster health (etcd, kubelet, node readin
 # seed ISOs left over from the pre-Talos layout.
 clean: down ## Remove disks, generated configs, seed ISOs and kubeconfig (keeps images, secrets)
 	rm -rf $(DISK_DIR)
-	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_PROXY_PATCH) $(TALOS_NODE_CONFIGS) \
+	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_PROXY_PATCH) $(TALOS_NODE_PATCHES) \
+		$(TALOS_NODE_CONFIGS) \
 		$(TALOS_META_DATA) $(TALOS_SEEDS) $(KUBECONFIG_FILE) $(HUBBLE_CA_FILE) \
 		$(CLOUD_INIT_DIR)/*/seed.iso
 
