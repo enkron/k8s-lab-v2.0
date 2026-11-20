@@ -102,9 +102,15 @@ spec:
     metadata:
       labels:
         app: frr-rr
+      annotations:
+        # FRR reads its config only at start. `make frr-rr` substitutes a hash of the rendered
+        # manifest here, so a config change rolls the pod instead of leaving it on the old one.
+        checksum/config: "@CONFIG_CHECKSUM@"
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      # The RR carries every BGP session in the cluster; keep it ahead of workloads on eviction.
+      priorityClassName: system-node-critical
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -128,6 +134,26 @@ spec:
               hostPort: 179
               protocol: TCP
               name: bgp
+          # vtysh answers only when the daemons it talks to (zebra, bgpd) are up. Exec, not
+          # tcpSocket: a probe connection to 179 is an unconfigured peer that bgpd logs and drops.
+          readinessProbe:
+            exec:
+              command: ["vtysh", "-c", "show bgp summary"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["vtysh", "-c", "show version"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
       volumes:
         - name: frr-config
           configMap:
