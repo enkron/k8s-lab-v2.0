@@ -121,7 +121,7 @@ bootstrapped cluster.
 | Hubble flows | `eval "$(make hubble-ca)"`, then `hubble observe -P` |
 | Serial console | `make console-<node>`, e.g. `make console-worker-1` (any VM, also before boot completes) |
 | VM state | `make status` |
-| Stop / resume | `make down`, later `make up`: the VMs boot from their disks, no new `bootstrap` |
+| Stop / resume | `make down` (ACPI power-off, SIGTERM after `SHUTDOWN_TIMEOUT=60`s), later `make up`: the VMs boot from their disks, no new `bootstrap` |
 | Tear down | `make clean` (keeps images and the PKI), `make nuke` (everything) |
 
 The talosconfig endpoint is `127.0.0.1:50000` (control-plane-1); after

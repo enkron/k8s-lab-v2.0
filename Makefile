@@ -480,7 +480,7 @@ $(DEBIAN_NODES:%=$(RUN_DIR)/%.pid): SMBIOS :=
 # to the qcow2 overlay, which otherwise only grows; detect-zeroes=unmap does the same for
 # zeroed blocks. mgmt netdev: ipv6=off, because SLIRP would advertise its deprecated
 # site-local fec0::/64 and an IPv6 default route that leads nowhere on a host without IPv6;
-# the lab's IPv6 lives on the internal segment.
+# the lab's IPv6 lives on the internal segment. -qmp: control socket for 'make down'.
 $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN_DIR)/ $(VDE_PID)
 	@echo "Starting $*..."
 	$(QEMU) \
@@ -500,18 +500,39 @@ $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN
 		-pidfile $@ \
 		-daemonize -display none \
 		-chardev socket,id=console,path=$(RUN_DIR)/$*.sock,server=on,wait=off \
-		-serial chardev:console
+		-serial chardev:console \
+		-qmp unix:$(RUN_DIR)/$*.qmp,server=on,wait=off
+
+# Seconds 'make down' waits for a guest to power off after the ACPI power button before it
+# kills QEMU.
+SHUTDOWN_TIMEOUT ?= 60
 
 .PHONY: down $(NODES:%=down-%)
-down: vde-down ## Stop all VMs (SIGTERM = power off), then the VDE switch
+down: vde-down ## Power off all VMs (ACPI, then kill after SHUTDOWN_TIMEOUT), then the VDE switch
 
-$(NODES:%=down-%): down-%: ## Stop one VM (down-<node>); also clears a stale pidfile and socket
-	@if [ -f $(RUN_DIR)/$*.pid ]; then \
-		echo "Stopping $*..."; kill "$$(cat $(RUN_DIR)/$*.pid)" 2>/dev/null || true; \
+# system_powerdown presses the virtual power button, so the guest shuts down cleanly (etcd,
+# filesystems) instead of losing power to a SIGTERM. A guest that ignores it is killed after
+# SHUTDOWN_TIMEOUT; a VM without a QMP socket (started by an older Makefile) is killed at once.
+$(NODES:%=down-%): down-%: ## Power off one VM (down-<node>); also clears a stale pidfile and sockets
+	@pidfile=$(RUN_DIR)/$*.pid; qmp=$(RUN_DIR)/$*.qmp; \
+	if [ -f "$$pidfile" ] && pid=$$(cat "$$pidfile") && kill -0 "$$pid" 2>/dev/null; then \
+		if [ -S "$$qmp" ]; then \
+			echo "Stopping $* (ACPI power button)..."; \
+			printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"system_powerdown"}' \
+				| $(SOCAT) - "unix-connect:$$qmp" >/dev/null 2>&1 || true; \
+			until ! kill -0 "$$pid" 2>/dev/null || [ $$SECONDS -ge $(SHUTDOWN_TIMEOUT) ]; do \
+				sleep 1; \
+			done; \
+		fi; \
+		if kill -0 "$$pid" 2>/dev/null; then \
+			echo "Stopping $* (SIGTERM)..."; kill "$$pid"; \
+		fi; \
 	fi
-	@rm -f $(RUN_DIR)/$*.pid $(RUN_DIR)/$*.sock
+	@rm -f $(RUN_DIR)/$*.pid $(RUN_DIR)/$*.sock $(RUN_DIR)/$*.qmp
 
-vde-down: $(NODES:%=down-%) ## Stop the VDE switch (after all VMs)
+# Workers first, then the control plane (their shutdown may still talk to the API server),
+# the router last.
+vde-down: $(addprefix down-,$(TALOS_WORKER_NODES) $(TALOS_CP_NODES) $(DEBIAN_NODES)) ## Stop the VDE switch (after all VMs)
 	@if [ -f $(VDE_PID) ]; then \
 		echo "Stopping VDE switch..."; kill "$$(cat $(VDE_PID))" 2>/dev/null || true; \
 	fi
