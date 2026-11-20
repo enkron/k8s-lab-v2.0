@@ -1,0 +1,27 @@
+# Install a pinned yq release into /usr/local/bin, verified against the release's SHA-256.
+# Shared by every job in ci.yaml (the version comes from its YQ_VERSION env).
+name: setup-yq
+description: Install a checksum-verified yq release
+inputs:
+  version:
+    description: yq release without the leading v, e.g. 4.54.3
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install yq ${{ inputs.version }}
+      shell: bash
+      env:
+        YQ_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        url="https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}"
+        tmp=$(mktemp -d)
+        curl -fsSL --retry 3 -o "$tmp/yq" "$url/yq_linux_amd64"
+        curl -fsSL --retry 3 -o "$tmp/checksums" "$url/checksums"
+        curl -fsSL --retry 3 -o "$tmp/order" "$url/checksums_hashes_order"
+        # One line per asset: the name, then every hash in the order checksums_hashes_order lists.
+        n=$(grep -nx 'SHA-256' "$tmp/order" | cut -d: -f1)
+        sum=$(awk -v f=$((n + 1)) '$1 == "yq_linux_amd64" {print $f}' "$tmp/checksums")
+        echo "$sum  $tmp/yq" | sha256sum -c -
+        sudo install -m 0755 "$tmp/yq" /usr/local/bin/yq

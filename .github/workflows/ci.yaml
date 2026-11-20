@@ -41,6 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/setup-yq
+        with:
+          version: ${{ env.YQ_VERSION }}
+
       - name: Read pinned cluster versions from the Makefile
         run: |
           for v in TALOS_VERSION KUBERNETES_VERSION; do
@@ -84,14 +88,15 @@ jobs:
             | sha256sum -c -
           tar -xzf kubeconform.tgz -C "$bin" kubeconform
 
-          # actionlint and yq: pinned tags (no single-file upstream checksums).
+          # actionlint (yq comes from the setup-yq action above)
           actionlint_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
-          curl -fsSL --retry 3 -o actionlint.tgz \
-            "$actionlint_url/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          actionlint_tgz="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o actionlint.tgz "$actionlint_url/$actionlint_tgz"
+          curl -fsSL --retry 3 -o actionlint-checksums \
+            "$actionlint_url/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          echo "$(grep " $actionlint_tgz\$" actionlint-checksums | cut -d' ' -f1)  actionlint.tgz" \
+            | sha256sum -c -
           tar -xzf actionlint.tgz -C "$bin" actionlint
-          curl -fsSL --retry 3 -o "$bin/yq" \
-            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          chmod +x "$bin/yq"
 
           # Python linters at the workstation's versions; cloud-init for the schema check;
           # ShellCheck for tests/*.sh (actionlint also runs it on these run: blocks).
@@ -116,11 +121,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install yq
-        run: |
-          sudo curl -fsSL --retry 3 -o /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+      - uses: ./.github/actions/setup-yq
+        with:
+          version: ${{ env.YQ_VERSION }}
 
       - name: Check every pinned artifact exists upstream
         env:
@@ -138,11 +141,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install yq
-        run: |
-          sudo curl -fsSL --retry 3 -o /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+      - uses: ./.github/actions/setup-yq
+        with:
+          version: ${{ env.YQ_VERSION }}
 
       - name: Report outdated dependencies
         run: |
