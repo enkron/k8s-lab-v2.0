@@ -528,12 +528,13 @@ bootstrap: $(TALOSCONFIG) ## Bootstrap etcd + control plane (waits for the Talos
 
 # Fetch kubeconfig into a file, rewrite the API server endpoint to the host-accessible port
 # forward, then merge into the default kubeconfig. Safe for multi-cluster setups: only the
-# $(CLUSTER_NAME) context is added or updated.
+# $(CLUSTER_NAME) context is added or updated. umask 077: the merged file holds admin
+# credentials and replaces ~/.kube/config, so it must not be created world-readable.
 kubeconfig: $(TALOSCONFIG) ## Retrieve kubeconfig from Talos and merge it into ~/.kube/config
 	$(TALOSCTL) kubeconfig $(KUBECONFIG_FILE) --force
 	$(KUBECTL) config set-cluster $(CLUSTER_NAME) --server=https://127.0.0.1:$(K8S_API_PORT) \
 		--kubeconfig $(KUBECONFIG_FILE)
-	KUBECONFIG=$(KUBECONFIG_FILE):$$HOME/.kube/config \
+	umask 077; KUBECONFIG=$(KUBECONFIG_FILE):$$HOME/.kube/config \
 		$(KUBECTL) config view --flatten > $$HOME/.kube/config.tmp
 	mv $$HOME/.kube/config.tmp $$HOME/.kube/config
 	$(KUBECTL) config use-context admin@$(CLUSTER_NAME)
