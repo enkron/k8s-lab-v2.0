@@ -62,11 +62,12 @@ behind `TALOS_VERSION` after a bump, override the package or point
 
 ## Before you start
 
-- **SSH key for the router**: `cloud-init/upstream-router/user-data` lets
-  user `k8s` in only with the key listed under `ssh_authorized_keys`. Put your
-  own public key there before `make seed`, or `make ssh-upstream` is refused
-  (password login is disabled). Nothing else needs SSH: the Talos nodes have
-  no sshd and `make test-e2e` does not use it.
+- **SSH key for the router**: user `k8s` on the router accepts only the
+  public key in `SSH_PUBKEY` (default `~/.ssh/id_ed25519.pub`), which
+  `make seed` writes into the router's cloud-init user-data; password login is
+  disabled. Use `make SSH_PUBKEY=<file.pub> seed` for another key. Nothing
+  else needs SSH: the Talos nodes have no sshd and `make test-e2e` does not
+  use it.
 - **TLS-intercepting proxy**: if the network re-signs HTTPS with a corporate
   root CA, generate the configs with `make PROXY_CA=<pem bundle> talos-gen`
   (e.g. `PROXY_CA=/etc/nix/macos-keychain.crt`). The Talos nodes then trust

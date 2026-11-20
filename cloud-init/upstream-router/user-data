@@ -10,8 +10,10 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
+    # Replaced with the contents of SSH_PUBKEY (default ~/.ssh/id_ed25519.pub) when
+    # 'make seed' builds the ISO.
     ssh_authorized_keys:
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOKYBETvhOvIuZY9TzIS6R2bQMRZOW3lDQuttbi35oiU enkron
+      - "@SSH_PUBKEY@"
 
 growpart:
   mode: auto

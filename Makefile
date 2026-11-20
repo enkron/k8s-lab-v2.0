@@ -139,6 +139,9 @@ TALOS_API_PORT := 50000
 K8S_API_PORT   := 6443
 SSH_PORT       := 2200
 SSH_USER       := k8s
+# Public key that may log in as SSH_USER on the router; written into its cloud-init user-data
+# (the @SSH_PUBKEY@ placeholder) when the seed ISO is built.
+SSH_PUBKEY     ?= $(HOME)/.ssh/id_ed25519.pub
 # Host address the port forwards listen on. Loopback only: an empty address makes QEMU listen on
 # every interface, which puts the Talos API (unauthenticated while a node sits in maintenance
 # mode), the Kubernetes API and router SSH on the LAN. talosconfig, kubeconfig and the API
@@ -195,9 +198,10 @@ CLUSTER_ENDPOINT    := https://[$(IP_INTERNAL_control-plane-1)]:$(K8S_API_PORT)
 CP_INTERNAL_IPS     := $(foreach n,$(TALOS_CP_NODES),$(IP_INTERNAL_$(n)))
 WORKER_INTERNAL_IPS := $(foreach n,$(TALOS_WORKER_NODES),$(IP_INTERNAL_$(n)))
 DISK_SIZE := 20G
-# PEM bundle with the root CA of a TLS-intercepting proxy, e.g. PROXY_CA=/etc/nix/macos-keychain.crt.
-# Set: the Talos nodes trust it and use plain NTP (talos/patches/proxy.yaml). Empty: Talos
-# defaults. Changing it regenerates the configs on the next talos-gen.
+# PEM bundle with the root CA of a TLS-intercepting proxy, e.g.
+# PROXY_CA=/etc/nix/macos-keychain.crt. Set: the Talos nodes trust it and use plain NTP
+# (talos/patches/proxy.yaml). Empty: Talos defaults. Changing it regenerates the configs on the
+# next talos-gen.
 PROXY_CA ?=
 # Per-VM UEFI variable store (pflash1); the code image (pflash0) is shared read-only.
 VARS_SIZE := 64M
@@ -238,6 +242,7 @@ TALOS_NODE_CONFIGS := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.yaml)
 TALOS_META_DATA    := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%.meta-data)
 TALOS_SEEDS        := $(TALOS_NODES:%=$(TALOS_GEN_DIR)/%-seed.iso)
 CLOUD_INIT_SEED    := $(CLOUD_INIT_DIR)/upstream-router/seed.iso
+ROUTER_USER_DATA   := $(TALOS_GEN_DIR)/upstream-router.user-data
 # Not KUBECONFIG: a make variable of that name would be exported over the user's own setting.
 # tests/e2e.sh defaults to this path.
 KUBECONFIG_FILE    := $(TALOS_GEN_DIR)/kubeconfig
@@ -498,8 +503,18 @@ $(TALOS_SEEDS): $(TALOS_GEN_DIR)/%-seed.iso: $(TALOS_GEN_DIR)/%.yaml $(TALOS_GEN
 		user-data=$(filter %.yaml,$^) meta-data=$(filter %.meta-data,$^)
 
 # Upstream router: standard cloud-init seed ISO (Debian).
-$(CLOUD_INIT_SEED): $(addprefix $(CLOUD_INIT_DIR)/upstream-router/,user-data meta-data network-config)
-	$(MKISOFS) -output $@ -volid cidata -joliet -rock $^
+# The user-data with SSH_PUBKEY in place of its placeholder; the source stays key-free.
+$(ROUTER_USER_DATA): $(CLOUD_INIT_DIR)/upstream-router/user-data $(SSH_PUBKEY) | $(TALOS_GEN_DIR)/
+	@key=$$(head -1 '$(SSH_PUBKEY)'); \
+	case $$key in ssh-*|ecdsa-*|sk-*) ;; \
+		*) echo "SSH_PUBKEY: '$(SSH_PUBKEY)' does not start with an OpenSSH public key" >&2; exit 1;; \
+	esac; \
+	sed "s|@SSH_PUBKEY@|$$key|" $< > $@
+
+$(CLOUD_INIT_SEED): $(ROUTER_USER_DATA) \
+    $(addprefix $(CLOUD_INIT_DIR)/upstream-router/,meta-data network-config)
+	$(MKISOFS) -output $@ -volid cidata -joliet -rock -graft-points \
+		user-data=$< $(foreach f,$(filter-out $<,$^),$(notdir $(f))=$(f))
 
 ##@ VM lifecycle
 
@@ -774,7 +789,7 @@ clean: down ## Remove disks, generated configs, seed ISOs and kubeconfig (keeps 
 	rm -rf $(DISK_DIR)
 	rm -f $(TALOS_BASE_CONFIGS) $(TALOSCONFIG) $(TALOS_PROXY_PATCH) $(TALOS_NODE_PATCHES) \
 		$(TALOS_NODE_CONFIGS) \
-		$(TALOS_META_DATA) $(TALOS_SEEDS) $(KUBECONFIG_FILE) $(HUBBLE_CA_FILE) \
+		$(TALOS_META_DATA) $(TALOS_SEEDS) $(KUBECONFIG_FILE) $(HUBBLE_CA_FILE) $(ROUTER_USER_DATA) \
 		$(CLOUD_INIT_DIR)/*/seed.iso
 
 nuke: clean ## Remove everything including base images and the Talos secrets bundle (new PKI)
