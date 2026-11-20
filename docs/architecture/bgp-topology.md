@@ -250,16 +250,25 @@ Nodes may advertise:
 - Service CIDRs (optional, depending on CNI)
 - Node loopback addresses (for control-plane stability)
 
-Example:
+In the lab:
 
-- control-plane-1 advertises: fd00:100::10/128 (node), 10.244.0.0/24 (pod CIDR)
-- worker-1 advertises: fd00:100::11/128 (node), 10.244.1.0/24 (pod CIDR)
-- worker-2 advertises: fd00:100::12/128 (node), 10.244.2.0/24 (pod CIDR)
+- worker-1 and worker-2 advertise their own IPv4 and IPv6 pod CIDRs (Cilium
+  `CiliumBGPAdvertisement` of type `PodCIDR`).
+- control-plane-1 runs no Cilium BGP session (the FRR pod holds port 179), so
+  the Route Reflector originates that node's pod CIDRs with `network`
+  statements, rendered by `make frr-rr` from the Node object.
+- Node addresses and Service CIDRs are not advertised.
+
+kube-controller-manager allocates node pod CIDRs in registration order, so
+which node gets `10.244.0.0/24` changes between rebuilds.
 
 Upstream routers advertise:
 
 - Default route
 - Optional lab-external prefixes
+
+How these routes are used (or not) for forwarding is described in
+[Architecture Overview, 11.3](overview.md#113-control-plane-vs-data-plane).
 
 ### 7.2 Policy Principles
 
@@ -269,6 +278,11 @@ Upstream routers advertise:
 
 No aggressive traffic engineering is applied unless explicitly enabled for
 experiments.
+
+These are the target principles. The lab does not implement them yet: both
+eBGP speakers run with `no bgp ebgp-requires-policy` (an RFC 8212 opt-out) and
+no prefix-lists, route-maps or `maximum-prefix`. See "Iterate on BGP policies"
+in `TODO.md`.
 
 ## 8. Failure Domains and Convergence
 
@@ -318,6 +332,9 @@ After Node-2 Failure:
 
 No assumption is made about hostile networks, but misconfiguration is treated
 as a primary risk.
+
+In the lab today, the only restriction is the explicit neighbor lists; GTSM and
+session authentication are not configured.
 
 ## 11. Observability and Operations
 

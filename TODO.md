@@ -2,7 +2,14 @@
 
 - [x] **Validate Talos nocloud CIDATA**: Confirmed mkisofs seed ISO is read
   correctly by Talos machined on aarch64/HVF (Talos v1.13.0)
-- [ ] **Iterate on BGP policies**: Experiment with route filtering
+- [ ] **Iterate on BGP policies**: Experiment with route filtering; drop
+  `no bgp ebgp-requires-policy` for explicit prefix-lists and `maximum-prefix`
+  on the eBGP session
+- [ ] **Real north-south path**: make the upstream router the egress gateway
+  (forwarding + NAT on its mgmt NIC, nodes prefer the BGP default over the
+  SLIRP one); today BGP is control plane only (overview.md 11.3)
+- [ ] **Service advertisement**: Cilium LB IPAM + `CiliumBGPAdvertisement` of
+  type `Service`, so LoadBalancer IPs reach the upstream router
 - [ ] **Add network policies**: Test Cilium network policy enforcement
 - [ ] **Stress test**: Deploy resource-intensive workloads
 - [ ] **Observability**: Configure Prometheus + Grafana for metrics

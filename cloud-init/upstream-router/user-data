@@ -24,8 +24,8 @@ disable_root: true
 
 timezone: UTC
 
-# Refresh the package index but skip the first-boot dist-upgrade: the `latest` cloud image
-# already tracks the current point release, and a full upgrade on a 512MB VM delays (or
+# Refresh the package index but skip the first-boot dist-upgrade: the pinned cloud image
+# build is recent ('make deps-bump' moves it), and a full upgrade on a 512MB VM delays (or
 # aborts) the FRR install below.
 package_update: true
 

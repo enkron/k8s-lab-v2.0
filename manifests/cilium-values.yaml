@@ -15,9 +15,10 @@ ipv4:
 ipv6:
   enabled: true
 
-# Native routing with BGP — no VXLAN/Geneve overlays.
-# Pod routes are distributed via BGP (Cilium BGP + FRR Route Reflector).
-# Traffic between pods on different nodes is routed at L3, not encapsulated.
+# Native routing: no VXLAN/Geneve overlay, pod traffic between nodes is routed at L3.
+# autoDirectNodeRoutes installs a kernel route to every node's pod CIDR (all nodes share one
+# L2 segment); that is what forwards it. BGP only advertises the pod CIDRs to the upstream
+# router: Cilium's BGP control plane never installs learned routes.
 routingMode: native
 autoDirectNodeRoutes: true
 ipv4NativeRoutingCIDR: 10.244.0.0/16

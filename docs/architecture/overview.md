@@ -97,9 +97,8 @@ is not a Kubernetes node — it runs no kubelet or container runtime.
   the rest of the network through edge or Top-of-Rack (ToR) routers. The
   upstream router fills this role, giving the lab a realistic north–south
   boundary to route traffic through.
-- Without it, the cluster would be a closed network with no default route and no
-  external reachability — BGP peering would have no upstream peer, and there
-  would be no way to test traffic leaving the cluster.
+- Without it, BGP peering would have no upstream peer and the cluster's
+  advertisements would have no external consumer.
 - It establishes the AS boundary (64512 ↔ 64513) required for eBGP, which is
   the standard way production clusters exchange routes with infrastructure
   outside the cluster.
@@ -108,10 +107,9 @@ is not a Kubernetes node — it runs no kubelet or container runtime.
 
 - Runs FRRouting (FRR) as the BGP daemon.
 - Peers with Route Reflectors in the cluster via eBGP.
-- Advertises default routes (0.0.0.0/0 and ::/0) into the cluster, acting as
-  the northbound gateway.
-- Receives pod and service CIDRs from the cluster, making them reachable from
-  outside.
+- Advertises default routes (0.0.0.0/0 and ::/0) into the cluster. They are
+  not used for forwarding yet: see 11.3.
+- Receives the cluster's pod CIDRs. Service CIDRs are not advertised.
 
 **Addressing:**
 
@@ -213,8 +211,10 @@ between VMs.
 ### 10.1 Pod Network
 
 - Each Pod receives its own IP address.
-- Pod IPs are routable within the cluster.
-- Pod CIDRs are advertised via BGP.
+- Pod IPs are routable within the cluster: Cilium installs a direct route to
+  every node's pod CIDR over the shared internal segment
+  (`autoDirectNodeRoutes`).
+- Pod CIDRs are advertised via BGP to the upstream router (see 11.3).
 
 Purpose:
 
@@ -257,10 +257,9 @@ with iBGP between the Route Reflector and worker nodes:
   control-plane-1, acting as the Route Reflector. This is production-common:
   FRR in containers is used in Cumulus/NVIDIA and bare-metal deployments.
 
-Each node advertises:
-
-- its Pod CIDR
-- optionally service CIDRs
+Each worker advertises its pod CIDR. The Route Reflector originates
+control-plane-1's pod CIDR itself, because the FRR pod holds port 179 there
+and Cilium runs no BGP session on that node. Service CIDRs are not advertised.
 
 Rationale:
 
@@ -271,7 +270,27 @@ Rationale:
 
 See [BGP Topology Architecture](bgp-topology.md) for detailed peering models.
 
-### 11.3 Future Extension
+### 11.3 Control Plane vs Data Plane
+
+In the current lab BGP is a control plane only; no BGP-learned route forwards a
+packet inside the cluster:
+
+- Cilium's BGP control plane advertises but never installs learned routes.
+  Pod-to-pod traffic between nodes follows the kernel routes Cilium installs
+  for every node's pod CIDR (`autoDirectNodeRoutes`), which works because all
+  nodes share one L2 segment.
+- On control-plane-1, FRR's zebra sees the same pod CIDRs as kernel routes and
+  the upstream default routes as eBGP (distance 20). The kernel routes win
+  (distance 0), so FRR installs nothing.
+- Every node, the upstream router included, egresses through its own SLIRP
+  default route on the management NIC. The upstream router does not forward
+  between its NICs.
+
+The upstream router's RIB is the one place the advertised pod CIDRs land. Making
+it the real north-south gateway needs forwarding and NAT on the router and a
+preference for the BGP default over the SLIRP one on the nodes; see `TODO.md`.
+
+### 11.4 Future Extension
 
 The design allows later introduction of:
 
