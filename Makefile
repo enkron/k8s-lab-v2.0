@@ -83,11 +83,11 @@ VDE_SWITCH     ?= $(eval VDE_SWITCH := $(find-vde_switch))$(VDE_SWITCH)
 # Cluster version triad - pinned together because they move as a tested set: Talos v1.14.0
 # defaults to K8s 1.37.0, but stable Cilium (1.20.x) is only e2e-tested up to K8s 1.36, so K8s is
 # held at 1.36.x. Keep all three within Cilium's supported window before bumping any one of them.
-TALOS_VERSION      := v1.14.3
-KUBERNETES_VERSION := 1.36.5
+TALOS_VERSION      := v1.14.6
+KUBERNETES_VERSION := 1.36.6
 # CILIUM_VERSION pins the Helm chart (resolved against the repo index at install time), unlike
 # TALOS_VERSION and KUBERNETES_VERSION which bake into the generated machine configs.
-CILIUM_VERSION := 1.20.3
+CILIUM_VERSION := 1.20.5
 # FRR_VERSION pins the Route Reflector pod image. manifests/frr-route-reflector.yaml must carry
 # the same tag and a matching 'frr version' header; tests/check-versions.sh enforces both.
 # FRR_ROUTER_VERSION is the FRR release the upstream router gets from its Debian release via apt
@@ -101,8 +101,8 @@ FRR_ROUTER_VERSION := 10.3.4
 # change under a lab that is rebuilt from the same commit.
 DEBIAN_RELEASE      := trixie
 DEBIAN_VERSION      := 13
-DEBIAN_IMAGE_BUILD  := 20261015-2632
-DEBIAN_IMAGE_SHA512 := a34e1c1eea1fbb9ad31ebdfc6c776d1d579ce9e3d740ab10549ebcdca6fe1a46c28e0a42cbcdf1eb561795776733c178f6e816fe1a2cb60d26ffc56c07f915c4
+DEBIAN_IMAGE_BUILD  := 20261116-2664
+DEBIAN_IMAGE_SHA512 := 3d4655799e64ca93f51832da31101188f28e01cb14fec2164ac9a7a5f70f303b80f72e9632498dd9cb0099ad04b12c186bffe4f0cd50c5e739faa3ee85007eb0
 DEBIAN_IMAGE_URL    := https://cloud.debian.org/images/cloud/$(DEBIAN_RELEASE)/$(DEBIAN_IMAGE_BUILD)/debian-$(DEBIAN_VERSION)-generic-arm64-$(DEBIAN_IMAGE_BUILD).qcow2
 # Default schematic (no extensions) from Talos Image Factory. The nocloud variant reads machine
 # config from a CIDATA ISO at boot.

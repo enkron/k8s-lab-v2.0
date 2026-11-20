@@ -889,3 +889,4 @@ make down
 | 2.3     | 2026-07-01 | Generated | Talos v1.13.5, Kubernetes 1.35.6, Cilium 1.19.5, FRR 10.4.4 |
 | 2.4     | 2026-09-04 | Generated | Talos v1.14.0 (multi-document patches), Kubernetes 1.36.4, Cilium 1.20.1, FRR 10.7.1, Debian 13 router with cloud-init FRR, test harness + CI |
 | 2.5     | 2026-10-16 | Generated | Talos v1.14.3, Kubernetes 1.36.5, Cilium 1.20.3 (patch bumps; Kubernetes 1.37 held by the Cilium window) |
+| 2.6     | 2026-11-20 | Generated | Talos v1.14.6, Kubernetes 1.36.6, Cilium 1.20.5, Debian image 20261116-2664 (patch bumps; Kubernetes 1.37 still held by the Cilium window) |

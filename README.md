@@ -45,13 +45,13 @@ inter-VM L2).
 
 | Component | Version | Pinned in |
 |---|---|---|
-| Talos Linux | v1.14.3 | `Makefile` (`TALOS_VERSION`) |
-| Kubernetes | 1.36.5 | `Makefile` (`KUBERNETES_VERSION`) |
-| Cilium (Helm chart) | 1.20.3 | `Makefile` (`CILIUM_VERSION`) |
+| Talos Linux | v1.14.6 | `Makefile` (`TALOS_VERSION`) |
+| Kubernetes | 1.36.6 | `Makefile` (`KUBERNETES_VERSION`) |
+| Cilium (Helm chart) | 1.20.5 | `Makefile` (`CILIUM_VERSION`) |
 | FRR (Route Reflector pod) | 10.7.1 | `Makefile` (`FRR_VERSION`), mirrored in the manifest |
 | FRR (upstream router) | 10.3 (Debian 13 package) | `Makefile` (`FRR_ROUTER_VERSION`, check only) |
 | Debian (upstream router) | 13 trixie | `Makefile` (`DEBIAN_RELEASE`) |
-| Debian cloud image build | 20261015-2632 | `Makefile` (`DEBIAN_IMAGE_BUILD`, SHA-512 verified) |
+| Debian cloud image build | 20261116-2664 | `Makefile` (`DEBIAN_IMAGE_BUILD`, SHA-512 verified) |
 
 Kubernetes stays on the newest minor that the stable Cilium release is
 e2e-tested against (Talos 1.14 itself defaults to 1.37). The machine config
