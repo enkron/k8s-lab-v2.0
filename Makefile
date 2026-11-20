@@ -476,6 +476,9 @@ $(DEBIAN_NODES:%=$(RUN_DIR)/%.pid): SMBIOS :=
 
 # Every prerequisite is order-only on purpose: a running VM keeps writing its disk and UEFI
 # variable store, so a timestamp dependency would try to relaunch a live VM.
+# mgmt netdev: ipv6=off, because SLIRP would advertise its deprecated site-local fec0::/64 and
+# an IPv6 default route that leads nowhere on a host without IPv6; the lab's IPv6 lives on the
+# internal segment.
 $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN_DIR)/ $(VDE_PID)
 	@echo "Starting $*..."
 	$(QEMU) \
@@ -488,7 +491,7 @@ $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN
 		-drive file=$(filter %.iso,$|),if=virtio,format=raw \
 		-device virtio-rng-pci \
 		$(SMBIOS) \
-		-netdev user,id=mgmt,net=$(MGMT_NET)$(addprefix $(comma),$(call join-comma,$(HOSTFWD_$*))) \
+		-netdev user,id=mgmt,net=$(MGMT_NET),ipv6=off$(addprefix $(comma),$(call join-comma,$(HOSTFWD_$*))) \
 		-device virtio-net-pci,netdev=mgmt,mac=$(MAC_MGMT_$*) \
 		-netdev vde,id=internal,sock=$(VDE_CTL) \
 		-device virtio-net-pci,netdev=internal,mac=$(MAC_INTERNAL_$*) \

@@ -307,7 +307,10 @@ Without redesigning the cluster.
   match the API server's advertise address (fd00:100::10, derived from the
   cluster endpoint).
 - Static addressing is required for node interfaces.
-- SLAAC explicitly disabled (`IPv6AcceptRA=no`).
+- No SLAAC: nothing on the internal segment sends router advertisements, the
+  router's netplan sets `accept-ra: false`, and the management (SLIRP) NICs are
+  IPv4-only (`ipv6=off`), so the only IPv6 addresses are the static internal
+  ones and link-local.
 
 Rationale:
 
