@@ -187,7 +187,8 @@ Patch files are stored in `talos/patches/`:
 
 - `common.yaml` - shared: `machine.certSANs` includes `127.0.0.1` and
   `localhost` (required for talosctl access through QEMU NAT port forwarding);
-  `KernelModuleConfig` (br_netfilter), `SysctlConfig` (forwarding, bridge-nf);
+  `SysctlConfig` (`net.ipv6.conf.all.forwarding`; the other forwarding and
+  bridge-nf sysctls are Talos defaults);
   `KubeNodeConfig.nodeIP.validSubnets: [fd00:100::/64, 10.100.0.0/24]` (forces
   kubelet to register with internal VDE network addresses - IPv6 primary, IPv4
   secondary for Cilium native routing datapath); `KubeNetworkConfig` with the

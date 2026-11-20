@@ -27,17 +27,14 @@ machine:
     - 127.0.0.1
     - localhost
 ---
-apiVersion: v1alpha1
-kind: KernelModuleConfig
-name: br_netfilter
----
+# IPv6 forwarding on every interface. Talos's kernel-param defaults already cover
+# net.ipv4.ip_forward, net.bridge.bridge-nf-call-ip{,6}tables (br_netfilter is built into the
+# Talos kernel) and net.ipv6.conf.default.forwarding, but `default` only applies to interfaces
+# created after it is set, not to the NICs present at boot.
 apiVersion: v1alpha1
 kind: SysctlConfig
 params:
-  net.ipv4.ip_forward: "1"
   net.ipv6.conf.all.forwarding: "1"
-  net.bridge.bridge-nf-call-iptables: "1"
-  net.bridge.bridge-nf-call-ip6tables: "1"
 ---
 # Force kubelet to register with addresses from the internal VDE network. Without this,
 # kubelet picks the SLIRP management IP (192.168.100.x) which is per-VM isolated NAT,

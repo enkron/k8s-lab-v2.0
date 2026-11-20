@@ -115,11 +115,10 @@ node_checks() { # NODE MGMT_IP IP6 IP4
     fail "$n: expected 2 LinkAliasConfig documents, found $(count LinkAliasConfig "$cfg")"
   fi
   check "$n: resolver uses the SLIRP DNS" doc ResolverConfig '.nameservers[0].address == "192.168.100.3"' "$cfg"
-  check "$n: br_netfilter module" doc KernelModuleConfig '.name == "br_netfilter"' "$cfg"
-  check "$n: forwarding and bridge-nf sysctls" \
-    doc SysctlConfig '.params["net.ipv4.ip_forward"] == "1" and .params["net.ipv6.conf.all.forwarding"] == "1" and .params["net.bridge.bridge-nf-call-iptables"] == "1" and .params["net.bridge.bridge-nf-call-ip6tables"] == "1"' "$cfg"
+  check "$n: IPv6 forwarding on all interfaces (the rest are Talos defaults)" \
+    doc SysctlConfig '(.params | to_json(0)) == "{\"net.ipv6.conf.all.forwarding\":\"1\"}"' "$cfg"
   local kind
-  for kind in RegistryTLSConfig TimeSyncConfig TrustedRootsConfig; do
+  for kind in KernelModuleConfig RegistryTLSConfig TimeSyncConfig TrustedRootsConfig; do
     if [ "$(count "$kind" "$cfg")" = 0 ]; then
       pass "$n: no $kind (Talos defaults; verified TLS and NTS without PROXY_CA)"
     else
