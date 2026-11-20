@@ -48,8 +48,8 @@ data:
     service integrated-vtysh-config
     !
     router bgp 64512
-     bgp router-id 10.0.0.10
-     bgp cluster-id 10.0.0.10
+     bgp router-id 10.100.0.10
+     bgp cluster-id 10.100.0.10
      no bgp ebgp-requires-policy
      bgp bestpath as-path multipath-relax
      !
