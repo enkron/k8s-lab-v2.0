@@ -476,9 +476,11 @@ $(DEBIAN_NODES:%=$(RUN_DIR)/%.pid): SMBIOS :=
 
 # Every prerequisite is order-only on purpose: a running VM keeps writing its disk and UEFI
 # variable store, so a timestamp dependency would try to relaunch a live VM.
-# mgmt netdev: ipv6=off, because SLIRP would advertise its deprecated site-local fec0::/64 and
-# an IPv6 default route that leads nowhere on a host without IPv6; the lab's IPv6 lives on the
-# internal segment.
+# Root disk: discard=unmap passes the guest's TRIM (Talos FilesystemTrimConfig, fstrim) through
+# to the qcow2 overlay, which otherwise only grows; detect-zeroes=unmap does the same for
+# zeroed blocks. mgmt netdev: ipv6=off, because SLIRP would advertise its deprecated
+# site-local fec0::/64 and an IPv6 default route that leads nowhere on a host without IPv6;
+# the lab's IPv6 lives on the internal segment.
 $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN_DIR)/ $(VDE_PID)
 	@echo "Starting $*..."
 	$(QEMU) \
@@ -487,7 +489,7 @@ $(PIDFILES): $(RUN_DIR)/%.pid: | $(DISK_DIR)/%.qcow2 $(DISK_DIR)/%-vars.fd $(RUN
 		-cpu max -smp $(SMP_$*) -m $(MEM_$*) \
 		-drive file=$(FIRMWARE_CODE),format=raw,if=pflash,readonly=on \
 		-drive file=$(DISK_DIR)/$*-vars.fd,format=raw,if=pflash \
-		-drive file=$(DISK_DIR)/$*.qcow2,if=virtio,format=qcow2 \
+		-drive file=$(DISK_DIR)/$*.qcow2,if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap \
 		-drive file=$(filter %.iso,$|),if=virtio,format=raw \
 		-device virtio-rng-pci \
 		$(SMBIOS) \
